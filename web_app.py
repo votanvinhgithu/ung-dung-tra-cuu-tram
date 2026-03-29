@@ -273,15 +273,22 @@ def load_revenue_data_v2(file_source, target_month_str):
                 future_dates = [d for d in dates if d > due_date]
                 next_due_date_str = min(future_dates).strftime('%m/%d/%Y') if future_dates else "Không có"
                 
-                # Xử lý Rút Giá trị Trả/Tháng (Hỗ trợ tốt dạng số có chấm 5.000.000 của VN)
-                raw_monthly = str(row[monthly_col])
-                digits_m = re.sub(r'\D', '', raw_monthly)
-                monthly_val = float(digits_m) if digits_m else 0.0
+                # Hàm xử lý trị số thông minh (Sửa lỗi Pandas tự thêm .0 vào cuối số nguyên)
+                def parse_vn_money(val):
+                    if pd.isna(val): return 0.0
+                    # Nếu file Excel đã format dạng số chuẩn, giữ nguyên
+                    if isinstance(val, (int, float)): return float(val)
                     
-                # Lấy Mặc Định Giá trị từ Cột CHÓT CÙNG (Số Tiền Thanh Toán Doanh Thu)
-                raw_payment = str(row[last_col_idx])
-                digits_p = re.sub(r'\D', '', raw_payment)
-                payment_val = float(digits_p) if digits_p else 0.0
+                    s = str(val).strip()
+                    # Sửa lỗi Pandas đọc 5000000 thành "5000000.0"
+                    if s.endswith('.0'): 
+                        s = s[:-2]
+                    # Loại bỏ dấu phân cách (dấu chấm, phẩy), chỉ giữ lại số
+                    digits = re.sub(r'\D', '', s)
+                    return float(digits) if digits else 0.0
+
+                monthly_val = parse_vn_money(row[monthly_col])
+                payment_val = parse_vn_money(row[last_col_idx])
                     
                 records.append({
                     'Mã trạm': str(row[ma_col]).strip() if pd.notna(row[ma_col]) else "",
