@@ -773,7 +773,7 @@ if not df_source.empty:
                 
                 # Biểu đồ Cột Song Song thay vì Chồng lên nhau (Dùng Altair có sẵn của Streamlit)
                 import altair as alt
-                st.markdown(f"### 📊 Biểu đồ Lợi Nhuận Kỳ {time_input_tab4}")
+                st.markdown(f'<h3 style="color:red; font-weight:bold;">📊 Biểu đồ Lợi Nhuận Kỳ {time_input_tab4}</h3>', unsafe_allow_html=True)
                 chart_data = df_report_raw.rename(columns={
                     "Tổng Doanh Thu": "Tổng Doanh Thu",
                     "Tiền Chủ Nhà": "Tổng Tiền Trả Chủ Nhà",
@@ -787,8 +787,8 @@ if not df_source.empty:
                     value_name='Số Tiền (VNĐ)'
                 )
                 
-                # Biểu đồ 3 cột tách biệt (chuẩn song song)
-                chart = alt.Chart(df_melted).mark_bar().encode(
+                # Biểu đồ 3 cột tách biệt (chuẩn song song, thu nhỏ bề ngang)
+                chart = alt.Chart(df_melted).mark_bar(size=18).encode(
                     x=alt.X('Chỉ Tiêu:N', axis=alt.Axis(title=None, labels=False, ticks=False)),
                     y=alt.Y('Số Tiền (VNĐ):Q', title='Giá Trị (VNĐ)'),
                     color=alt.Color('Chỉ Tiêu:N', scale=alt.Scale(
@@ -796,14 +796,17 @@ if not df_source.empty:
                         range=['#FF0000', '#800080', '#00008B']
                     ), legend=alt.Legend(orient='top', title=None)),
                     column=alt.Column('Tháng:N', header=alt.Header(title=None, labelOrient='bottom', labelAlign='center'))
+                ).properties(
+                    width=75 # Ép chiều rộng mỗi tháng là 75 pixel để cột luôn nhỏ xinh
                 ).configure_view(
                     stroke='transparent'
                 )
                 
-                st.altair_chart(chart, use_container_width=True)
+                # Tắt tự động phóng to của Streamlit để biểu đồ giữ đúng form nhỏ
+                st.altair_chart(chart, use_container_width=False)
                 
                 # Bảng chi tiết
-                st.markdown(f"### 📑 Bảng Tổng Hợp Dòng Tiền Kỳ {time_input_tab4}")
+                st.markdown(f'<h3 style="color:red; font-weight:bold;">📑 Bảng Tổng Hợp Dòng Tiền Kỳ {time_input_tab4}</h3>', unsafe_allow_html=True)
                 df_report_display = df_report_raw.copy()
                 for col in ["Doanh thu Viettel", "Doanh thu Vina", "Doanh thu Mobi", "Tổng Doanh Thu", "Tiền Chủ Nhà", "Lợi nhuận"]:
                     df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.0f}" if x != 0 else "-")
@@ -820,28 +823,31 @@ if not df_source.empty:
                     "Lợi nhuận": "Lợi nhuận sau thuế của Công ty"
                 }, inplace=True)
                 
-                # Inject Custom HTML Table Style (Màu Xanh Dương Đậm cho Tab 4 Lợi Nhuận)
+                # Inject Custom HTML Table Style (Màu Đỏ Đậm cho Tab 4 Lợi Nhuận)
                 st.markdown("""
                 <style>
-                .blue-header-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
-                .blue-header-table th { background-color: #e0f2fe !important; color: #00008B !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
-                .blue-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
-                .blue-header-table tr:nth-child(even) { background-color: #f9f9f9; }
-                .blue-header-table tr:hover { background-color: #f1f1f1; }
+                .red-header-tab4 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                .red-header-tab4 th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                .red-header-tab4 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                .red-header-tab4 tr:nth-child(even) { background-color: #f9f9f9; }
+                .red-header-tab4 tr:hover { background-color: #f1f1f1; }
                 </style>
                 """, unsafe_allow_html=True)
                 
-                html_report = df_report_display.to_html(index=False, classes="blue-header-table", escape=False)
+                html_report = df_report_display.to_html(index=False, classes="red-header-tab4", escape=False)
                 st.markdown(html_report, unsafe_allow_html=True)
                 
                 out_prf = io.BytesIO()
                 with pd.ExcelWriter(out_prf, engine='openpyxl') as writer:
-                    df_report_display.to_excel(writer, index=False, sheet_name=f'Loi_Nhuan_{year_input_tab4}')
+                    # Chống lỗi sập do dấu gạch chéo không được dùng làm tên Sheet Excel
+                    safe_sheet_name = str(time_input_tab4).replace('/', '_')
+                    df_report_display.to_excel(writer, index=False, sheet_name=f'Loi_Nhuan_{safe_sheet_name}')
                     
+                safe_file_name = f"Bao_Cao_Loi_Nhuan_{safe_sheet_name}.xlsx"
                 st.download_button(
-                    label=f"🔽 TẢI XUỐNG BÁO CÁO LỢI NHUẬN NĂM {year_input_tab4} (EXCEL)",
+                    label=f"🔽 TẢI XUỐNG BÁO CÁO LỢI NHUẬN KỲ {time_input_tab4} (EXCEL)",
                     data=out_prf.getvalue(),
-                    file_name=f"Bao_Cao_Loi_Nhuan_{year_input_tab4}.xlsx",
+                    file_name=safe_file_name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
