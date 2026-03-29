@@ -546,10 +546,16 @@ if not df_source.empty:
                 st.snow()
                 st.success(f"🔥 **BÁO CÁO DOANH THU CÁC NHÀ MẠNG THÁNG {month_input_tab3} HOÀN TẤT!**")
                 
-                # CSS Xuyên Tâm để đổi màu header các lưới Dataframe (Nếu Streamlit version cũ)
-                st.markdown("""<style>
-                div[data-testid="stDataFrame"] th { color: red !important; font-weight: 900 !important; }
-                </style>""", unsafe_allow_html=True)
+                # Inject Custom HTML Table Style 100% Force Red Bold
+                st.markdown("""
+                <style>
+                .red-header-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                .red-header-table th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                .red-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                .red-header-table tr:nth-child(even) { background-color: #f9f9f9; }
+                .red-header-table tr:hover { background-color: #f1f1f1; }
+                </style>
+                """, unsafe_allow_html=True)
                 
                 st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>', unsafe_allow_html=True)
                 df_summ = pd.DataFrame({
@@ -562,9 +568,9 @@ if not df_source.empty:
                 # Chèn STT
                 df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
                 
-                # Tạo bộ style tô đậm màu đỏ riêng cho Dataframe Header
-                style_cols = [{'selector': 'th', 'props': [('color', 'red !important'), ('font-weight', 'bold !important')]}]
-                st.dataframe(df_summ.style.set_table_styles(style_cols), use_container_width=True, hide_index=True)
+                # Render Html Table
+                html_summ = df_summ.to_html(index=False, classes="red-header-table", escape=False)
+                st.markdown(html_summ, unsafe_allow_html=True)
                 
                 def render_provider_table(df_prov, name, b_num):
                     if df_prov is not None and not df_prov.empty:
@@ -572,7 +578,9 @@ if not df_source.empty:
                         st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
                         df_d = df_prov.drop(['__raw_payment__'], axis=1, errors='ignore')
                         df_d.insert(0, 'STT', range(1, len(df_d) + 1))
-                        st.dataframe(df_d.style.set_table_styles(style_cols), use_container_width=True, hide_index=True)
+                        # Render Html Table
+                        html_d = df_d.to_html(index=False, classes="red-header-table", escape=False)
+                        st.markdown(html_d, unsafe_allow_html=True)
                     else:
                         st.markdown(f"---")
                         st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
