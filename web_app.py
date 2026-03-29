@@ -346,6 +346,9 @@ if not df_source.empty:
             month_input_tab2 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=current_mm_yyyy)
             
             search_tab2 = st.text_input("🔍 Tra cứu cụ thể một (hoặc nhiều) mã trạm trong DS của tháng (Để trống là Tính Tổng Tất Cả):", placeholder="Ví dụ: HCM001, HCM002...")
+            
+            date_limit_tab2 = st.text_input("⏳ Lọc CỤM Trạm Cần TT Ghi sổ Tính Tới Mốc Ngày (Bỏ qua nếu muốn xem Cả Tháng):", placeholder="Gõ cực chuẩn định dạng MM/DD/YYYY. Ví dụ: 03/15/2026")
+            
             submit_payment_filter = st.form_submit_button(label="🔍 TRA CỨU DANH SÁCH", use_container_width=True)
             
         if submit_payment_filter:
@@ -359,9 +362,19 @@ if not df_source.empty:
                 if target_stations_2:
                     mask2 = df_pay_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations_2)
                     df_pay_display = df_pay_display[mask2]
+                    
+            # Lọc đếm ngược Tới Mốc Ngày (Phục vụ Chốt Quỹ Giải Ngân Kế Toán)
+            if date_limit_tab2.strip():
+                try:
+                    limit_dt = pd.to_datetime(date_limit_tab2.strip(), format='%m/%d/%Y')
+                    temp_dt = pd.to_datetime(df_pay_display['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
+                    mask_date = (temp_dt <= limit_dt) & (temp_dt.notna())
+                    df_pay_display = df_pay_display[mask_date]
+                except Exception:
+                    st.warning("⚠️ Lỗi định dạng ngày chốt sổ! Bạn phải gõ dấy sẹc '/' theo mẫu chuẩn tháng MM/DD/YYYY (Ví dụ: 03/15/2026)")
             
             if df_pay_display.empty:
-                st.warning(f"❌ Các mã trạm đó không cần thanh toán trong tháng {month_input_tab2}.")
+                st.warning(f"❌ Rất tiếc, Không tìm thấy Trạm nào cần giải ngân thỏa mãn các lớp điều kiện trong tháng {month_input_tab2}.")
             else:
                 # SẮP XẾP TỪ NGÀY ĐẦU THÁNG ĐẾN CUỐI THÁNG CHUẨN XÁC
                 df_pay_display = df_pay_display.sort_values(
@@ -373,7 +386,11 @@ if not df_source.empty:
                 total_amount = df_pay_display["__raw_amount__"].sum()
                 
                 st.snow()
-                st.success(f"🔥 **TỔNG KẾT BÁO CÁO NHANH THÁNG {month_input_tab2}:**")
+                if date_limit_tab2.strip():
+                    st.success(f"🔥 **BÁO CÁO GIẢI NGÂN GẤP (CHỈ TÍNH CÁC HĐ ĐẾN CHỐT NGÀY {date_limit_tab2.strip()} CỦA THÁNG {month_input_tab2}):**")
+                else:
+                    st.success(f"🔥 **TỔNG KẾT BÁO CÁO NHANH LŨY KẾ CẢ THÁNG NAY ({month_input_tab2}):**")
+                    
                 colA, colB = st.columns(2)
                 colA.metric("🏢 Tổng số trạm hiển thị:", f"{total_stations} trạm")
                 colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount:,.0f} VNĐ")
