@@ -214,13 +214,31 @@ def load_revenue_data_v2(file_source, target_month_str):
                 if "mã trạm" in str(c).lower() or "mã" in str(c).lower():
                     ma_col = c; break
                     
-            monthly_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
-            for c in df.columns:
-                c_str = str(c).lower()
-                if ("trả/tháng" in c_str or "số tiền" in c_str or "giá" in c_str or "cước" in c_str) and (c != df.columns[-1]) and (c != ma_col):
-                    monthly_col = c; break
-            
-            last_col_idx = df.columns[-1]
+            # 1. TÌM CỘT CUỐI CÙNG (bỏ qua Ghi chú và các cột Unnamed trống)
+            valid_cols_for_last = [c for c in df.columns if "ghi chú" not in str(c).lower() and "note" not in str(c).lower()]
+            filtered_cols = []
+            for c in valid_cols_for_last:
+                if str(c).lower().startswith("unnamed"):
+                    # Giữ lại Unnamed nếu có chứa dữ liệu thực sự
+                    if not df[c].replace('', pd.NA).dropna().empty:
+                        filtered_cols.append(c)
+                else:
+                    filtered_cols.append(c)
+            last_col_idx = filtered_cols[-1] if filtered_cols else df.columns[-1]
+
+            # 2. TÌM CỘT TRẢ/THÁNG (Giá thuê) BẰNG TỪ KHÓA ƯU TIÊN
+            monthly_col = None
+            kw_list = ["trả/tháng", "thuê/tháng", "giá thuê", "đơn giá", "mức cước", "số tiền", "cước", "giá"]
+            for kw in kw_list:
+                for c in df.columns:
+                    c_str = str(c).lower()
+                    if kw in c_str and (c != last_col_idx) and (c != ma_col):
+                        monthly_col = c
+                        break
+                if monthly_col: break
+                
+            if not monthly_col:
+                monthly_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
             date_cols = [c for c in df.columns if c != ma_col and c != monthly_col and c != last_col_idx]
             
             import re
