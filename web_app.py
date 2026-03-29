@@ -932,8 +932,12 @@ if not df_source.empty:
                         ma_tram = str(row.get("mã trạm", "")).strip().upper()
                         if pd.isna(ma_tram) or ma_tram == "NAN": ma_tram = ""
                         
-                        # Loại bỏ các ký tự đặc biệt -, ->, -->, khoảng trắng ra khỏi mã trạm
-                        ma_tram = ma_tram.replace('>', '').replace('-', '').replace(' ', '')
+                        # Xóa bỏ các Cụm tên riêng dính liền dễ phát sinh
+                        ma_tram = ma_tram.replace('_A DŨNG', '').replace('_A DUNG', '').replace('A DŨNG', '').replace('A DUNG', '')
+                        
+                        # Bắt đầu "MÁY SẤY" loại bỏ các ký tự đặc biệt: -, ->, -->, khoảng trắng, phẩy, chấm, gạch dưới
+                        for char in ['>', '-', ' ', ',', '.', '_']:
+                            ma_tram = ma_tram.replace(char, '')
                         
                         raw_hd = str(row.get("Số HĐ với chủ nhà", "")).strip().upper()
                         if pd.isna(raw_hd) or raw_hd == "NAN": raw_hd = ""
