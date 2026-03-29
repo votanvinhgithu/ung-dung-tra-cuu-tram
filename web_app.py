@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import os
 from datetime import datetime
+import re
 
 # --- CẤU HÌNH GIAO DIỆN WEB ---
 st.set_page_config(page_title="Hệ Thống Tra Cứu Hợp Đồng", page_icon="📡", layout="wide")
@@ -35,14 +36,26 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
     ma_tram_col = None
     amount_col = None
     
-    # Fuzzy match 'mã trạm' and 'số tiền thanh toán'
+    # Ưu tiên lấy cột mã trạm
     for c in df_pay.columns:
         c_low = str(c).strip().lower()
         if "mã trạm" in c_low or "mã" in c_low:
             if ma_tram_col is None: ma_tram_col = c
-        if "số tiền thanh toán" in c_low or "số tiền" in c_low:
-            if amount_col is None: amount_col = c
             
+    # Ưu tiên tìm cột "thuê/tháng", "số tiền thuê/tháng" ở sheet 2
+    for c in df_pay.columns:
+        c_low = str(c).strip().lower()
+        if "thuê/tháng" in c_low or "số tiền thuê" in c_low or "tiền thuê/tháng" in c_low:
+            amount_col = c
+            break
+    # Nếu không có "thuê/tháng" thì rớt xuống tìm cột "số tiền"
+    if not amount_col:
+        for c in df_pay.columns:
+            c_low = str(c).strip().lower()
+            if "số tiền thanh toán" in c_low or "số tiền" in c_low:
+                amount_col = c
+                break
+                
     if not ma_tram_col: return df_main # Bỏ qua nếu sheet 2 không có cột mã trạm
     
     date_cols = [c for c in df_pay.columns if c != ma_tram_col and c != amount_col]
@@ -51,7 +64,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         ma_tram = str(row[ma_tram_col]).strip().lower() if pd.notna(row[ma_tram_col]) else ""
         if not ma_tram: continue
         
-        # Bốc KHỚP nguyên giá trị của Cột (không tính theo tháng, lấy chính xác số tổng trên Excel)
+        # Bốc KHỚP nguyên giá trị của Cột tiền tại Sheet 2 (số tiền thuê/tháng)
         amount = row[amount_col] if amount_col and pd.notna(row[amount_col]) else 0
         try:
             amount_val = float(str(amount).replace(',', '').replace(' ', ''))
@@ -92,14 +105,11 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             if future_dates: next_date = min(future_dates)
             
         def fmt(d): return d.strftime('%m/%d/%Y') if d else "-"
-        # Format the amount beautifully, e.g., 10,000,000
-        formatted_amount = f"{amount_val:,.0f}" if amount_val > 0 else "-"
         
         pay_dict[ma_tram] = {
             "Ngày tới hạn TT trong tháng": fmt(due_date) if due_date else "Không có",
             "Ngày TT kỳ trước": fmt(prev_date),
             "Ngày đến hạn TT kỳ tiếp theo": fmt(next_date),
-            "Số tiền cần thanh toán": formatted_amount,
             "__raw_amount__": amount_val,
             "__is_due_this_month__": bool(due_date)
         }
@@ -110,17 +120,29 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         "Ngày TT kỳ trước": [],
         "Ngày đến hạn TT kỳ tiếp theo": [],
         "Số tiền cần thanh toán": [],
+        "giá thuê chủ nhà": [], # Cột này sẽ đè Cột có sẵn trên Sheet 1
         "__raw_amount__": [],
         "__is_due_this_month__": []
     }
     
-    import re
     for _, row in df_res.iterrows():
         ma = str(row.get("mã trạm", "")).strip().lower()
         info = pay_dict.get(ma, {})
         
-        # Tiền gốc từ cột "số tiền thanh toán" ở Sheet 2 (đang là tiền thuể 1 tháng)
+        # Tiền gốc từ cột "số tiền thuê/tháng" ở Sheet 2
         base_monthly = info.get("__raw_amount__", 0.0)
+        
+        # Nếu Sheet 2 không có / không tồn tại trạm thì lấy dự phòng ở Sheet 1
+        if base_monthly == 0.0:
+            raw_price_s1 = str(row.get("giá thuê chủ nhà", "0"))
+            try:
+                price_digits = re.sub(r'[^\d.]', '', raw_price_s1.replace(',', '.'))
+                base_monthly = float(price_digits) if price_digits else 0.0
+            except:
+                pass
+                
+        # FORMAT số tiền một tháng CẬP NHẬT lên TAB 1 và TAB 2
+        formatted_monthly = f"{base_monthly:,.0f}" if base_monthly > 0 else "-"
         
         # Đọc chu kỳ thanh toán ở Sheet 1 (cột này có sẵn trong dataframe df_res)
         raw_cycle = str(row.get("chu kỳ thanh toán cho chủ nhà", "1")).strip().lower()
@@ -138,7 +160,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             
         real_cycle = cycle_val * multiplier
         
-        # TRỌNG TÂM: SỐ TIỀN THANH TOÁN = Tiền 1 tháng * Số tháng chu kỳ
+        # TRỌNG TÂM: SỐ TIỀN THANH TOÁN (1 Kỳ) = Tiền 1 tháng * Số tháng chu kỳ
         calc_amount = base_monthly * real_cycle
         
         if calc_amount > 0:
@@ -151,6 +173,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         new_cols["Ngày đến hạn TT kỳ tiếp theo"].append(info.get("Ngày đến hạn TT kỳ tiếp theo", "-"))
         
         # Ghi đè vào kết quả hiển thị
+        new_cols["giá thuê chủ nhà"].append(formatted_monthly)
         new_cols["Số tiền cần thanh toán"].append(formatted_amount)
         new_cols["__raw_amount__"].append(calc_amount)
         new_cols["__is_due_this_month__"].append(info.get("__is_due_this_month__", False))
@@ -161,8 +184,9 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
     return df_res
 
 # --- HÀM XỬ LÝ DỮ LIỆU & LƯU VÀO CACHE BỘ NHỚ ---
+# V3 để phá vỡ Cache cũ của website trên mạng
 @st.cache_data
-def load_data_and_enrich_v2(file_source, target_month_str):
+def load_data_and_enrich_v3(file_source, target_month_str):
     try:
         xl = pd.ExcelFile(file_source)
         
@@ -250,12 +274,12 @@ df_source = pd.DataFrame()
 
 if DEFAULT_FILE:
     st.sidebar.success(f"✅ Đã kết nối tự động với CSDL gốc: `{DEFAULT_FILE}`")
-    df_source = load_data_and_enrich_v2(DEFAULT_FILE, month_input)
+    df_source = load_data_and_enrich_v3(DEFAULT_FILE, month_input)
 else:
     st.sidebar.warning(f"⚠️ Vùng Nhúng Ngầm Trống! Bạn hãy File Excel vào GitHub nhé.")
     uploaded_file = st.sidebar.file_uploader("Hoặc tải file Excel tạm thời lên đây:", type=["xlsx", "xls"])
     if uploaded_file is not None:
-        df_source = load_data_and_enrich_v2(uploaded_file, month_input)
+        df_source = load_data_and_enrich_v3(uploaded_file, month_input)
 
 # Khu vực hiển thị kết quả Thẻ Bài
 def render_cards(df_to_render, is_payment_tab=False):
@@ -365,4 +389,4 @@ if not df_source.empty:
                     type="primary"
                 )
 else:
-    st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động hiển thị ra khi quét thấy.")
+    st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
