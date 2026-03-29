@@ -183,6 +183,60 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         
     return df_res
 
+# --- HÀM XỬ LÝ DOANH THU NHÀ MẠNG (TAB 3) ---
+@st.cache_data
+def load_revenue_data_v1(file_source, target_month_str):
+    try:
+        xl = pd.ExcelFile(file_source)
+        sheets = xl.sheet_names
+        def process_provider(provider_keyword):
+            target_sheet = next((s for s in sheets if provider_keyword.lower() in s.lower()), None)
+            if not target_sheet: return None
+            df = pd.read_excel(file_source, sheet_name=target_sheet)
+            if df.empty: return None
+            
+            ma_col = df.columns[0]
+            for c in df.columns:
+                if "mã trạm" in str(c).lower() or "mã" in str(c).lower():
+                    ma_col = c; break
+                    
+            monthly_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+            for c in df.columns:
+                if ("trả/tháng" in str(c).lower() or "số tiền" in str(c).lower()) and (c != df.columns[-1]) and (c != ma_col):
+                    monthly_col = c; break
+                        
+            df_clean = pd.DataFrame()
+            df_clean['Mã trạm'] = df[ma_col]
+            try:
+                raw_monthly = df[monthly_col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
+                df_clean[f'Số tiền {provider_keyword} trả/tháng'] = pd.to_numeric(raw_monthly, errors='coerce').fillna(0)
+            except:
+                df_clean[f'Số tiền {provider_keyword} trả/tháng'] = 0
+                
+            parts = str(target_month_str).strip().split('/')
+            if len(parts) == 2:
+                default_date = f"{parts[0]}/01/{parts[1]}"
+            else:
+                default_date = target_month_str
+                
+            df_clean[f'Kỳ {provider_keyword} thanh toán'] = default_date
+            
+            last_col_idx = df.columns[-1]
+            try:
+                raw_payment = df[last_col_idx].astype(str).str.replace(r'[^\d.-]', '', regex=True)
+                df_clean[f'__raw_payment__'] = pd.to_numeric(raw_payment, errors='coerce').fillna(0)
+            except:
+                df_clean[f'__raw_payment__'] = 0.0
+                
+            df_clean = df_clean[df_clean['Mã trạm'].notna() & (df_clean['Mã trạm'].astype(str).str.strip() != '') & (df_clean['Mã trạm'].astype(str).str.strip().str.lower() != 'nan')]
+            df_clean[f'Số tiền {provider_keyword} trả/tháng'] = df_clean[f'Số tiền {provider_keyword} trả/tháng'].apply(lambda x: f"{x:,.0f}" if x > 0 else "-")
+            df_clean[f'Số tiền {provider_keyword} thanh toán'] = df_clean[f'__raw_payment__'].apply(lambda x: f"{x:,.0f}" if x > 0 else "-")
+            return df_clean
+            
+        return process_provider("Viettel"), process_provider("Vina"), process_provider("Mobi")
+    except Exception as e:
+        return None, None, None
+
 # --- HÀM XỬ LÝ DỮ LIỆU & LƯU VÀO CACHE BỘ NHỚ ---
 # V3 để phá vỡ Cache cũ của website trên mạng
 @st.cache_data
@@ -305,7 +359,7 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ"])
+    tab1, tab2, tab3 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ", "💰 DOANH THU CÁC NHÀ MẠNG"])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
     with tab1:
@@ -418,5 +472,76 @@ if not df_source.empty:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
+
+    # ------------ TAB 3: DOANH THU NHÀ MẠNG ------------
+    with tab3:
+        st.markdown(f"### 💰 Báo Cáo Nhận Doanh Thu Từ Các Nhà Mạng")
+        with st.form(key='revenue_form'):
+            st.info("Hệ thống tự động tra cứu Dữ liệu Doanh thu từ 3 Sheet (Trạm Viettel thanh toán, Trạm Vina thanh toán, Trạm Mobi thanh toán). Cột SỐ TIỀN THANH TOÁN (1 kỳ) sẽ móc mặc định từ Cột Cuối Cùng của mỗi bảng trên file Excel!")
+            month_input_tab3 = st.text_input("📅 Nhập định dạng Tháng/Năm Doanh Thu (MM/YYYY):", value=current_mm_yyyy)
+            submit_revenue = st.form_submit_button(label="🔍 LÊN BÁO CÁO DOANH THU", use_container_width=True)
+            
+        if submit_revenue:
+            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+            if f_source is None:
+                st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
+            else:
+                df_viettel, df_vina, df_mobi = load_revenue_data_v1(f_source, month_input_tab3)
+                
+                sv = df_viettel['__raw_payment__'].sum() if (df_viettel is not None and not df_viettel.empty) else 0.0
+                svina = df_vina['__raw_payment__'].sum() if (df_vina is not None and not df_vina.empty) else 0.0
+                smobi = df_mobi['__raw_payment__'].sum() if (df_mobi is not None and not df_mobi.empty) else 0.0
+                total_all = sv + svina + smobi
+                
+                st.snow()
+                st.success(f"🔥 **BÁO CÁO DOANH THU CÁC NHÀ MẠNG THÁNG {month_input_tab3} HOÀN TẤT!**")
+                
+                st.markdown("### 🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng")
+                df_summ = pd.DataFrame({
+                    "Tháng Công ty có doanh thu": [month_input_tab3],
+                    "sum số tiền Viettel thanh toán": [f"{sv:,.0f}"],
+                    "sum số tiền Vina thanh toán": [f"{svina:,.0f}"],
+                    "sum số tiền Mobi thanh toán": [f"{smobi:,.0f}"],
+                    "sum tổng số tiền Viettel+Vina+Mobi thanh toán": [f"{total_all:,.0f}"]
+                })
+                # Chèn STT
+                df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
+                st.dataframe(df_summ, use_container_width=True, hide_index=True)
+                
+                def render_provider_table(df_prov, name, b_num):
+                    if df_prov is not None and not df_prov.empty:
+                        st.markdown(f"---")
+                        st.markdown(f"### 📡 Bảng {b_num}: Doanh thu Trạm {name} TT")
+                        df_d = df_prov.drop(['__raw_payment__'], axis=1, errors='ignore')
+                        df_d.insert(0, 'STT', range(1, len(df_d) + 1))
+                        st.dataframe(df_d, use_container_width=True, hide_index=True)
+                    else:
+                        st.markdown(f"---")
+                        st.markdown(f"### 📡 Bảng {b_num}: Doanh thu Trạm {name} TT")
+                        st.info(f"Không có số liệu hoặc thiếu Sheet '{name}' chưa đúng tên theo yêu cầu.")
+                        
+                render_provider_table(df_viettel, "Viettel", 2)
+                render_provider_table(df_vina, "Vina", 3)
+                render_provider_table(df_mobi, "Mobi", 4)
+                
+                st.markdown("---")
+                out_rev = io.BytesIO()
+                with pd.ExcelWriter(out_rev, engine='openpyxl') as writer:
+                    df_summ.to_excel(writer, index=False, sheet_name='Tong_Hop_Doanh_Thu')
+                    if df_viettel is not None and not df_viettel.empty:
+                        df_viettel.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Viettel')
+                    if df_vina is not None and not df_vina.empty:
+                        df_vina.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Vina')
+                    if df_mobi is not None and not df_mobi.empty:
+                        df_mobi.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Mobi')
+                        
+                st.download_button(
+                    label="🔽 TẢI XUỐNG FILE TỔNG HỢP DOANH THU (EXCEL)",
+                    data=out_rev.getvalue(),
+                    file_name=f"Bao_Cao_Doanh_Thu_Nha_Mang_{month_input_tab3.replace('/','_')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
