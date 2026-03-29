@@ -7,7 +7,7 @@ import os
 st.set_page_config(page_title="Hệ Thống Tra Cứu Hợp Đồng", page_icon="📡", layout="wide")
 
 st.title("📡 Hệ Thống Viễn Thông - Tra Cứu Hợp Đồng Trạm")
-st.markdown("Hệ thống Web thông minh, được tối ưu hoàn hảo cho cả trải nghiệm **Trên Máy Tính** lẫn **Màn Hình Di Động** (Android/iOS).")
+st.markdown("Giao diện siêu hiện đại được làm lại thân thiện tuyệt đối với màn hình **Điện Thoại Di Động**.")
 
 TARGET_COLUMNS = [
     "mã trạm", "Q/H", "long thuê", "lat thuê", "Địa chỉ", 
@@ -73,56 +73,86 @@ df_source = pd.DataFrame()
 st.sidebar.header("📁 Dữ Liệu Báo Cáo")
 st.sidebar.markdown("Cơ chế tàng hình nhúng sẵn file không cần Upload thủ công.")
 
-# Tên file Excel mặc định để đọc
 DEFAULT_FILE = "data.xlsx"
 
 if os.path.exists(DEFAULT_FILE):
     st.sidebar.success(f"✅ Đã kết nối tự động với CSDL được cấp: `{DEFAULT_FILE}`")
     df_source = load_data(DEFAULT_FILE)
 else:
-    st.sidebar.warning(f"⚠️ Dữ liệu gốc `{DEFAULT_FILE}` chưa được thiết lập tự động! Bạn hãy tải file lên hoặc đổi tên file Excel hiện tại thành `{DEFAULT_FILE}` và copy đè vào thư mục mã nguồn nhé.")
+    st.sidebar.warning(f"⚠️ Dữ liệu gốc `{DEFAULT_FILE}` chưa được thiết lập tự động! Vui lòng đẩy file `data.xlsx` lên GitHub.")
     
-# Nhúng File Uploader như một công cụ hỗ trợ phòng hờ file cứng bị lỗi
 uploaded_file = st.sidebar.file_uploader("Mở Cổng Tải File Phụ Trợ:", type=["xlsx", "xls"])
 if uploaded_file is not None:
     df_source = load_data(uploaded_file)
     st.sidebar.success("✅ Nạp liệu file thành công!")
 
-# --- GIAO DIỆN HIỂN THỊ CHÍNH ---
+# --- GIAO DIỆN HIỂN THỊ CHÍNH (TỐI ƯU MOBILE) ---
 if not df_source.empty:
-    st.markdown("### 🔍 Phễu Lọc Mã Trạm")
-    input_text = st.text_area("Hộp dán mã trạm thông minh (Bạn hãy copy Paste một hay nhiều mã trạm vào đây, mỗi máy cách nhau dấu phẩy hoặc enter xuống dòng. Để trống để xem rổ dữ liệu gốc):", height=120)
+    st.markdown("---")
     
-    df_display = df_source.copy()
+    # SỬ DỤNG FORM ĐỂ gom nhóm hành động gõ và tạo nút Bấm Kính Lúp
+    with st.form(key='search_form'):
+        st.markdown("### 🔍 Nhập Mã Trạm Cần Tra Cứu")
+        input_text = st.text_area("Hộp dán mã trạm thông minh (Dán nhiều mã ngăn cách bằng phẩy hoặc cứ enter xuống dòng là dính. Nếu để trống sẽ hiển thị tất cả):", height=100)
+        
+        # Nút nhấn mới được gắn Biểu tượng kính lúp to đẹp
+        submit_button = st.form_submit_button(label="🔍 TÌM KIẾM TRẠM MATCH", use_container_width=True)
     
-    if input_text.strip():
-        target_stations = [s.strip().lower() for s in input_text.replace(',', '\n').split('\n') if s.strip()]
-        if target_stations:
-            mask = df_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations)
-            df_display = df_display[mask]
+    # Chỉ khi nào bấm Nút Kính lúp thì Code xử lý ở dưới mới chạy
+    if submit_button:
+        df_display = df_source.copy()
+        
+        if input_text.strip():
+            target_stations = [s.strip().lower() for s in input_text.replace(',', '\n').split('\n') if s.strip()]
+            if target_stations:
+                mask = df_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations)
+                df_display = df_display[mask]
+                
+        if df_display.empty:
+            st.warning("❌ Rất tiếc! Không tìm thấy mã trạm nào khớp với dữ liệu bạn cung cấp.")
+        else:
+            st.success(f"✅ Móc nối thành công! Bắt được **{len(df_display)}** trạm.")
             
-    if df_display.empty:
-        st.warning("❌ Không tìm thấy mã trạm phù hợp trong Cụm Dữ Liệu này.")
-    else:
-        st.success(f"✅ Quét thành công! Có **{len(df_display)}** trạm khớp với mã tra cứu.")
-        
-        # Bảng Dataframe của Streamlit siêu mạnh, hỗ trợ vuốt chạm trên mobile
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-        
-        # Tiện ích bổ sung: Móc Download Data
-        st.markdown("### 📥 Tải Danh Sách Tìm Thấy")
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_display.to_excel(writer, index=False, sheet_name='DuLieuLọc')
-        excel_data = output.getvalue()
-        
-        st.download_button(
-            label="🔽 Tải Về Trực Tiếp Điện Thoại Báo Cáo Rút Gọn Này",
-            data=excel_data,
-            file_name="Ket_Qua_Tram.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
-else:
-    st.info("💡 Hệ thống trống Dữ Liệu Cơ Sở. Không thể hiển thị thống kê.")
+            # --- HIỂN THỊ THÔNG TIN THEO CHIỀU DỌC (Dành riêng cho Màn Hình Điện Thoại) ---
+            st.markdown("### 🏷️ Chi Tiết Hợp Đồng (Vuốt Dọc Giống App Điện Thoại)")
+            
+            # Kỹ thuật chia thẻ dọc: Chống treo máy nếu dán cả ngàn trạm
+            if len(df_display) > 50:
+                st.warning(f"⚠️ Do kết quả trả về quá lớn ({len(df_display)} trạm), ứng dụng sẽ chỉ hiển thị Khung Thẻ Dọc cho 50 trạm đầu tiên để tránh đứng màn hình điện thoại. Anh/chị có thể xem Bảng dữ liệu thô bị gộp bên dưới nhe.")
+                display_cards = df_display.head(50)
+            else:
+                display_cards = df_display
+                
+            for index, row in display_cards.iterrows():
+                tram_id = str(row["mã trạm"]) if pd.notna(row["mã trạm"]) and str(row["mã trạm"]) != "" else "Không Mẫu"
+                
+                # Tạo một thẻ Expand có thể tự đóng/mở được, tiêu đề Cực Rõ Nét
+                with st.expander(f"📌 Bấm vào để xem Trạm: {tram_id}", expanded=True):
+                    # Duyệt và in tất cả các cột theo dòng văn bản (Thay vì hiển thị bảng ngang)
+                    for col in TARGET_COLUMNS:
+                        val = row[col]
+                        if pd.isna(val) or str(val).strip() == "":
+                            val = "-"  # Thay ô trống bằng nét gạch
+                        st.markdown(f"**{col}:** &nbsp;&nbsp; {val}")
 
+            # Lưu lại Bảng siêu bự vào một Tab để nhỡ ai xài Desktop vẫn quẩy được
+            with st.expander("📊 Bấm Thêm Vào Đây Để Bật Lại Bảng Báo Cáo Dạng Lưới Ngang (Excel)", expanded=False):
+                st.dataframe(df_display, use_container_width=True, hide_index=True)
+            
+            # Tiện ích bổ sung: Móc Download Data
+            st.markdown("---")
+            st.markdown("### 📥 Lưu Toàn Bộ Danh Sách Về Điện Thoại")
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_display.to_excel(writer, index=False, sheet_name='DuLieuLọc')
+            excel_data = output.getvalue()
+            
+            st.download_button(
+                label="🔽 Nhấn Tại Đây Để Tải File Excel Xuống Máy",
+                data=excel_data,
+                file_name="Ket_Qua_Tram_Mobile.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+else:
+    st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động hiển thị ra khi quét thấy.")
