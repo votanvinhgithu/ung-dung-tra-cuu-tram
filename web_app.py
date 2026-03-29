@@ -162,7 +162,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
 
 # --- HÀM XỬ LÝ DỮ LIỆU & LƯU VÀO CACHE BỘ NHỚ ---
 @st.cache_data
-def load_data_and_enrich(file_source, target_month_str):
+def load_data_and_enrich_v2(file_source, target_month_str):
     try:
         xl = pd.ExcelFile(file_source)
         
@@ -250,12 +250,12 @@ df_source = pd.DataFrame()
 
 if DEFAULT_FILE:
     st.sidebar.success(f"✅ Đã kết nối tự động với CSDL gốc: `{DEFAULT_FILE}`")
-    df_source = load_data_and_enrich(DEFAULT_FILE, month_input)
+    df_source = load_data_and_enrich_v2(DEFAULT_FILE, month_input)
 else:
     st.sidebar.warning(f"⚠️ Vùng Nhúng Ngầm Trống! Bạn hãy File Excel vào GitHub nhé.")
     uploaded_file = st.sidebar.file_uploader("Hoặc tải file Excel tạm thời lên đây:", type=["xlsx", "xls"])
     if uploaded_file is not None:
-        df_source = load_data_and_enrich(uploaded_file, month_input)
+        df_source = load_data_and_enrich_v2(uploaded_file, month_input)
 
 # Khu vực hiển thị kết quả Thẻ Bài
 def render_cards(df_to_render, is_payment_tab=False):
