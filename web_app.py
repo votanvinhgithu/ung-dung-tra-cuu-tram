@@ -251,6 +251,10 @@ def load_revenue_data_v2(file_source, target_month_str):
                     
                 due_date = due_this_month[0]
                 
+                # Quét tìm kỳ tiếp theo (Ngày CÓ NẰM TRONG MẢNG nhưng LỚN HƠN due_date)
+                future_dates = [d for d in dates if d > due_date]
+                next_due_date_str = min(future_dates).strftime('%m/%d/%Y') if future_dates else "Không có"
+                
                 # Xử lý Rút Giá trị Trả/Tháng (Hỗ trợ tốt dạng số có chấm 5.000.000 của VN)
                 raw_monthly = str(row[monthly_col])
                 digits_m = re.sub(r'\D', '', raw_monthly)
@@ -265,6 +269,7 @@ def load_revenue_data_v2(file_source, target_month_str):
                     'Mã trạm': str(row[ma_col]).strip() if pd.notna(row[ma_col]) else "",
                     f'Số tiền {provider_keyword} trả/tháng': f"{monthly_val:,.0f}" if monthly_val > 0 else "-",
                     f'Kỳ {provider_keyword} thanh toán': due_date.strftime('%m/%d/%Y'),
+                    'Ngày đến kỳ thanh toán tiếp theo': next_due_date_str,
                     f'Số tiền {provider_keyword} thanh toán': f"{payment_val:,.0f}" if payment_val > 0 else "-",
                     '__raw_payment__': payment_val
                 })
