@@ -261,7 +261,6 @@ def load_data_and_enrich_v3(file_source, target_month_str):
 st.sidebar.header("📁 Dữ Liệu Báo Cáo")
 
 current_mm_yyyy = datetime.now().strftime('%m/%Y')
-month_input = st.sidebar.text_input("📅 Tùy chỉnh Tháng Tra Cứu (MM/YYYY):", value=current_mm_yyyy)
 
 # Hỗ trợ tự động nhận diện cả chữ hoa chữ thường
 DEFAULT_FILE = ""
@@ -274,12 +273,12 @@ df_source = pd.DataFrame()
 
 if DEFAULT_FILE:
     st.sidebar.success(f"✅ Đã kết nối tự động với CSDL gốc: `{DEFAULT_FILE}`")
-    df_source = load_data_and_enrich_v3(DEFAULT_FILE, month_input)
+    df_source = load_data_and_enrich_v3(DEFAULT_FILE, current_mm_yyyy)
 else:
     st.sidebar.warning(f"⚠️ Vùng Nhúng Ngầm Trống! Bạn hãy File Excel vào GitHub nhé.")
     uploaded_file = st.sidebar.file_uploader("Hoặc tải file Excel tạm thời lên đây:", type=["xlsx", "xls"])
     if uploaded_file is not None:
-        df_source = load_data_and_enrich_v3(uploaded_file, month_input)
+        df_source = load_data_and_enrich_v3(uploaded_file, current_mm_yyyy)
 
 # Khu vực hiển thị kết quả Thẻ Bài
 def render_cards(df_to_render, is_payment_tab=False):
@@ -306,7 +305,7 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2 = st.tabs(["🔍 LỌC MÃ TRẠM THEO YÊU CẦU", "💵 DS TRẠM CẦN THANH TOÁN (SHEET 2)"])
+    tab1, tab2 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ"])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
     with tab1:
@@ -340,14 +339,19 @@ if not df_source.empty:
                 
     # ------------ TAB 2: QUẢN LÝ TỔNG THANH TOÁN THÁNG ------------
     with tab2:
-        st.markdown(f"### 💵 Các trạm Cần Thanh Toán trong **{month_input}**")
+        st.markdown(f"### 💵 Quản Lý Phân Luồng Thanh Toán Chủ Nhà")
         with st.form(key='payment_form'):
-            st.info("Bấm lọc để thống kê Số Tiền tổng của tháng. Có thể nhập mã CỤ THỂ 1 TRẠM phía dưới để rà soát.")
-            search_tab2 = st.text_input("🔍 Tra cứu cụ thể một (hoặc nhiều) mã trạm trong DS của tháng này (Để trống là Tính Tổng Tất Cả):", placeholder="Ví dụ: HCM001, HCM002...")
-            submit_payment_filter = st.form_submit_button(label="🔍 LỌC CÁC TRẠM TỚI HẠN THANH TOÁN THÁNG NÀY", use_container_width=True)
+            st.info("Nhập tùy chọn tháng năm để truy vấn dòng tiền tương ứng. Nhấn nút TRA CỨU bên dưới để thực thi.")
+            # Chèn ô TEXT BOX chọn tháng trực tiếp vào Tab 2
+            month_input_tab2 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=current_mm_yyyy)
+            
+            search_tab2 = st.text_input("🔍 Tra cứu cụ thể một (hoặc nhiều) mã trạm trong DS của tháng (Để trống là Tính Tổng Tất Cả):", placeholder="Ví dụ: HCM001, HCM002...")
+            submit_payment_filter = st.form_submit_button(label="🔍 TRA CỨU DANH SÁCH", use_container_width=True)
             
         if submit_payment_filter:
-            df_pay_display = df_source[df_source["__is_due_this_month__"] == True].copy()
+            # Nhồi lại Data Engine đặc biệt theo Option Tháng vừa nhập!
+            df_pay_source = load_data_and_enrich_v3(DEFAULT_FILE, month_input_tab2) if DEFAULT_FILE else df_source
+            df_pay_display = df_pay_source[df_pay_source["__is_due_this_month__"] == True].copy()
             
             # Lọc theo trạm cụ thể nếu người dùng có gõ
             if search_tab2.strip():
@@ -357,14 +361,13 @@ if not df_source.empty:
                     df_pay_display = df_pay_display[mask2]
             
             if df_pay_display.empty:
-                st.warning(f"❌ Các mã trạm đó không cần thanh toán trong tháng {month_input} này.")
+                st.warning(f"❌ Các mã trạm đó không cần thanh toán trong tháng {month_input_tab2}.")
             else:
                 total_stations = len(df_pay_display)
                 total_amount = df_pay_display["__raw_amount__"].sum()
                 
-                # Cảnh báo rực rỡ báo cáo ngân sách
                 st.snow()
-                st.success(f"🔥 **TỔNG KẾT BÁO CÁO NHANH THÁNG {month_input}:**")
+                st.success(f"🔥 **TỔNG KẾT BÁO CÁO NHANH THÁNG {month_input_tab2}:**")
                 colA, colB = st.columns(2)
                 colA.metric("🏢 Tổng số trạm hiển thị:", f"{total_stations} trạm")
                 colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount:,.0f} VNĐ")
@@ -386,9 +389,9 @@ if not df_source.empty:
                     df_clean_tab2.to_excel(writer, index=False, sheet_name='TraCuuThang')
                 excel_data2 = output2.getvalue()
                 st.download_button(
-                    label="🔽 NHẤN TẢI XUỐNG BÁO CÁO THANH TOÁN 1 THÁNG NÀY (EXCEL)",
+                    label="🔽 NHẤN TẢI XUỐNG BÁO CÁO (EXCEL)",
                     data=excel_data2,
-                    file_name=f"Bao_Cao_Thanh_Toan_{month_input.replace('/','_')}.xlsx",
+                    file_name=f"Bao_Cao_Thanh_Toan_{month_input_tab2.replace('/','_')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
