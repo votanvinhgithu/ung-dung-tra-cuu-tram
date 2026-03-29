@@ -314,8 +314,113 @@ def load_revenue_data_v2(file_source, target_month_str):
     except Exception as e:
         return None, None, None
 
-# --- HÀM XỬ LÝ DỮ LIỆU & LƯU VÀO CACHE BỘ NHỚ ---
-# V3 để phá vỡ Cache cũ của website trên mạng
+# --- HÀM TỔNG HỢP LỢI NHUẬN 12 THÁNG (TAB 4) ---
+def get_yearly_report_data(file_source, target_year_str, df_source):
+    try:
+        target_year = int(str(target_year_str).strip())
+    except:
+        target_year = datetime.now().year
+        
+    months = [f"{m:02d}" for m in range(1, 13)]
+    
+    # 1. TỔNG TIỀN CHỦ NHÀ
+    chu_nha_totals = []
+    for m in months:
+        target_m_str = f"{m}/{target_year}"
+        df_pay = enrich_payment_data(df_source.copy(), target_m_str)
+        if df_pay is not None and not df_pay.empty:
+            df_pay_m = df_pay[df_pay["__is_due_this_month__"] == True]
+            tot = df_pay_m["__raw_amount__"].sum()
+        else:
+            tot = 0.0
+        chu_nha_totals.append(tot)
+        
+    # 2. TỔNG DOANH THU CÁC NHÀ MẠNG
+    xl = pd.ExcelFile(file_source)
+    sheets = xl.sheet_names
+    
+    def sum_provider_for_year(provider_keyword):
+        monthly_sums = [0.0] * 12
+        target_sheet = next((s for s in sheets if provider_keyword.lower() in s.lower()), None)
+        if not target_sheet: return monthly_sums
+        
+        df = pd.read_excel(file_source, sheet_name=target_sheet)
+        if df.empty: return monthly_sums
+        
+        ma_col = df.columns[0]
+        valid_cols = [c for c in df.columns if "ghi chú" not in str(c).lower() and "note" not in str(c).lower()]
+        filtered = []
+        for c in valid_cols:
+            if str(c).lower().startswith("unnamed"):
+                if not df[c].replace('', pd.NA).dropna().empty: filtered.append(c)
+            else:
+                filtered.append(c)
+        last_col = filtered[-1] if filtered else df.columns[-1]
+
+        m_col = None
+        kw_list = ["trả/tháng", "thuê/tháng", "giá thuê", "đơn giá", "mức cước", "số tiền", "cước", "giá"]
+        for kw in kw_list:
+            for c in df.columns:
+                c_str = str(c).lower()
+                if kw in c_str and (c != last_col) and (c != ma_col):
+                    m_col = c; break
+            if m_col: break
+        if not m_col: m_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+        
+        date_cols = [c for c in df.columns if c != ma_col and c != m_col and c != last_col]
+        
+        def parse_num(val):
+            if pd.isna(val): return 0.0
+            if isinstance(val, (int, float)): return float(val)
+            s = str(val).strip()
+            if s.endswith('.0'): s = s[:-2]
+            digits = re.sub(r'\D', '', s)
+            return float(digits) if digits else 0.0
+            
+        for _, row in df.iterrows():
+            payment_val = parse_num(row[last_col])
+            if payment_val == 0: continue
+            
+            dates = []
+            for c in date_cols:
+                val = row[c]
+                if pd.notna(val):
+                    if isinstance(val, (pd.Timestamp, datetime)): dates.append(pd.to_datetime(val))
+                    else:
+                        try: dates.append(pd.to_datetime(val))
+                        except: pass
+            
+            for d in dates:
+                if d.year == target_year:
+                    m_idx = d.month - 1
+                    monthly_sums[m_idx] += payment_val
+                    
+        return monthly_sums
+
+    viettel_totals = sum_provider_for_year("Viettel")
+    vina_totals = sum_provider_for_year("Vina")
+    mobi_totals = sum_provider_for_year("Mobi")
+    
+    # 3. BUILD DATAFRAME TỔNG
+    records = []
+    for i, m in enumerate(months):
+        sum_rev = viettel_totals[i] + vina_totals[i] + mobi_totals[i]
+        chu_nha = chu_nha_totals[i]
+        profit = (sum_rev / 1.1) - chu_nha
+        
+        records.append({
+            "Tháng": f"{m}/{target_year}",
+            "Doanh thu Viettel": viettel_totals[i],
+            "Doanh thu Vina": vina_totals[i],
+            "Doanh thu Mobi": mobi_totals[i],
+            "Tổng Doanh Thu": sum_rev,
+            "Tiền Chủ Nhà": chu_nha,
+            "Lợi nhuận": profit
+        })
+        
+    return pd.DataFrame(records)
+
+# --- HÀM XỬ LÝ DỮ LIỆU ĐỌC CƠ BẢN ---
 @st.cache_data
 def load_data_and_enrich_v3(file_source, target_month_str):
     try:
@@ -436,7 +541,7 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2, tab3 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ", "💰 DOANH THU CÁC NHÀ MẠNG"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ", "💰 DOANH THU CÁC NHÀ MẠNG", "📈 BÁO CÁO LỢI NHUẬN CÔNG TY"])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
     with tab1:
@@ -632,6 +737,87 @@ if not df_source.empty:
                     label="🔽 TẢI XUỐNG FILE TỔNG HỢP DOANH THU (EXCEL)",
                     data=out_rev.getvalue(),
                     file_name=f"Bao_Cao_Doanh_Thu_Nha_Mang_{month_input_tab3.replace('/','_')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+
+    # ------------ TAB 4: BÁO CÁO LỢI NHUẬN CÔNG TY ------------
+    with tab4:
+        st.markdown(f"### 📈 Báo Cáo KQKD Công Ty Cả Năm (Doanh Thu vs Chi Phí)")
+        with st.form(key='profit_yearly_form'):
+            st.info("Nhập vào Năm định dạng YYYY (Ví dụ: 2026). Hệ thống sẽ tự động tổng hợp Chéo toàn bộ Doanh Thu và Chi phí 12 tháng!")
+            year_input_tab4 = st.text_input("📅 Nhập định dạng Năm Tài Chính cần xem (YYYY):", value=str(datetime.now().year))
+            submit_profit = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN 12 THÁNG", use_container_width=True)
+            
+        if submit_profit:
+            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+            if f_source is None:
+                st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
+            else:
+                with st.spinner(f"Hệ thống đang xào nấu dữ liệu Doanh thu & Chi phí 12 tháng của năm {year_input_tab4}... (Vui lòng chờ vài giây)"):
+                    df_report_raw = get_yearly_report_data(f_source, year_input_tab4, df_source)
+                
+                st.snow()
+                st.success(f"🔥 CẬP NHẬT HOÀN TẤT LỢI NHUẬN CẢ NĂM {year_input_tab4}!")
+                
+                # Biểu đồ
+                st.markdown(f"### 📊 Biểu đồ Lợi Nhuận Năm {year_input_tab4}")
+                chart_data = df_report_raw.rename(columns={
+                    "Tổng Doanh Thu": "Tổng Doanh Thu",
+                    "Tiền Chủ Nhà": "Tổng Tiền Trả Chủ Nhà",
+                    "Lợi nhuận": "Lợi Nhuận Công Ty"
+                }).set_index("Tháng")[["Tổng Doanh Thu", "Tổng Tiền Trả Chủ Nhà", "Lợi Nhuận Công Ty"]]
+                
+                # Cột 1 màu đỏ, Cột 2 màu tím, Cột 3 màu xanh dương đậm
+                try:
+                    st.bar_chart(
+                        chart_data,
+                        color=["#FF0000", "#800080", "#00008B"]
+                    )
+                except Exception as chart_e:
+                    # Fallback phòng trường hợp Streamlit quá cũ (sẽ tự động phân màu random)
+                    st.bar_chart(chart_data)
+                
+                # Bảng chi tiết
+                st.markdown(f"### 📑 Bảng Tổng Hợp Dòng Tiền 12 Tháng Năm {year_input_tab4}")
+                df_report_display = df_report_raw.copy()
+                for col in ["Doanh thu Viettel", "Doanh thu Vina", "Doanh thu Mobi", "Tổng Doanh Thu", "Tiền Chủ Nhà", "Lợi nhuận"]:
+                    df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.0f}" if x != 0 else "-")
+                    
+                df_report_display.insert(0, 'STT', range(1, 13))
+                
+                df_report_display.rename(columns={
+                    "Tháng": "Tháng mm/yyyy",
+                    "Doanh thu Viettel": "Doanh thu Viettel theo tháng",
+                    "Doanh thu Vina": "Doanh thu Vina theo tháng",
+                    "Doanh thu Mobi": "Doanh thu Mobi theo tháng",
+                    "Tổng Doanh Thu": "Sum doanh thu Viettel+Vina+Mobi theo tháng",
+                    "Tiền Chủ Nhà": "Tổng tiền phải trả chủ nhà theo tháng",
+                    "Lợi nhuận": "Lợi nhuận sau thuế của Công ty"
+                }, inplace=True)
+                
+                # Inject Custom HTML Table Style (Màu Xanh Dương Đậm cho Tab 4 Lợi Nhuận)
+                st.markdown("""
+                <style>
+                .blue-header-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                .blue-header-table th { background-color: #e0f2fe !important; color: #00008B !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                .blue-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                .blue-header-table tr:nth-child(even) { background-color: #f9f9f9; }
+                .blue-header-table tr:hover { background-color: #f1f1f1; }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                html_report = df_report_display.to_html(index=False, classes="blue-header-table", escape=False)
+                st.markdown(html_report, unsafe_allow_html=True)
+                
+                out_prf = io.BytesIO()
+                with pd.ExcelWriter(out_prf, engine='openpyxl') as writer:
+                    df_report_display.to_excel(writer, index=False, sheet_name=f'Loi_Nhuan_{year_input_tab4}')
+                    
+                st.download_button(
+                    label=f"🔽 TẢI XUỐNG BÁO CÁO LỢI NHUẬN NĂM {year_input_tab4} (EXCEL)",
+                    data=out_prf.getvalue(),
+                    file_name=f"Bao_Cao_Loi_Nhuan_{year_input_tab4}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
