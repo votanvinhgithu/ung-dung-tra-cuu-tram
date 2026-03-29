@@ -327,15 +327,15 @@ if not df_source.empty:
             else:
                 st.success(f"✅ Móc nối thành công! Bắt được **{len(df_display)}** trạm.")
                 
-                st.markdown("### 🏷️ Chi Tiết Dạng Thẻ (Dành cho Điện thoại)")
-                render_cards(df_display, is_payment_tab=False)
-                
-                st.markdown("---")
                 st.markdown("### 📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)")
                 df_clean_tab1 = df_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
                 # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
                 df_clean_tab1.insert(0, 'STT', range(1, len(df_clean_tab1) + 1))
                 st.dataframe(df_clean_tab1, use_container_width=True, hide_index=True)
+                
+                st.markdown("---")
+                st.markdown("### 🏷️ Chi Tiết Dạng Thẻ (Dành cho Vuốt Trên Điện Thoại)")
+                render_cards(df_display, is_payment_tab=False)
                 
     # ------------ TAB 2: QUẢN LÝ TỔNG THANH TOÁN THÁNG ------------
     with tab2:
@@ -379,15 +379,15 @@ if not df_source.empty:
                 colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount:,.0f} VNĐ")
                 
                 st.markdown("---")
-                st.markdown("### 🏷️ Chi Tiết Các Trạm Trong Hạng Mục")
-                render_cards(df_pay_display, is_payment_tab=True)
-                
-                st.markdown("---")
-                st.markdown("### 📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)")
+                st.markdown("### 📊 Tổng Hợp Lưới Ngang (Báo cáo Lọc Dạng Bảng Excel)")
                 df_clean_tab2 = df_pay_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
                 # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
                 df_clean_tab2.insert(0, 'STT', range(1, len(df_clean_tab2) + 1))
                 st.dataframe(df_clean_tab2, use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+                st.markdown("### 🏷️ Chi Tiết Các Trạm (Dạng Thẻ Điện Thoại Phóng To)")
+                render_cards(df_pay_display, is_payment_tab=True)
                 
                 # Nút tải xuống cho báo cáo Tab 2
                 output2 = io.BytesIO()
