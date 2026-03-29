@@ -51,6 +51,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         ma_tram = str(row[ma_tram_col]).strip().lower() if pd.notna(row[ma_tram_col]) else ""
         if not ma_tram: continue
         
+        # Bốc KHỚP nguyên giá trị của Cột (không tính theo tháng, lấy chính xác số tổng trên Excel)
         amount = row[amount_col] if amount_col and pd.notna(row[amount_col]) else 0
         try:
             amount_val = float(str(amount).replace(',', '').replace(' ', ''))
@@ -205,7 +206,7 @@ def load_data_and_enrich(file_source, target_month_str):
 st.sidebar.header("📁 Dữ Liệu Báo Cáo")
 
 current_mm_yyyy = datetime.now().strftime('%m/%Y')
-month_input = st.sidebar.text_input("📅 Tháng Thanh Toán Hiện Tại (MM/YYYY) (Báo cáo Sheet 2 sẽ dựa theo tháng này):", value=current_mm_yyyy)
+month_input = st.sidebar.text_input("📅 Tùy chỉnh Tháng Tra Cứu (MM/YYYY):", value=current_mm_yyyy)
 
 # Hỗ trợ tự động nhận diện cả chữ hoa chữ thường
 DEFAULT_FILE = ""
@@ -220,7 +221,7 @@ if DEFAULT_FILE:
     st.sidebar.success(f"✅ Đã kết nối tự động với CSDL gốc: `{DEFAULT_FILE}`")
     df_source = load_data_and_enrich(DEFAULT_FILE, month_input)
 else:
-    st.sidebar.warning(f"⚠️ Vùng Nhúng Ngầm Trống! Bạn hãy gập file Excel vào GitHub nhé.")
+    st.sidebar.warning(f"⚠️ Vùng Nhúng Ngầm Trống! Bạn hãy File Excel vào GitHub nhé.")
     uploaded_file = st.sidebar.file_uploader("Hoặc tải file Excel tạm thời lên đây:", type=["xlsx", "xls"])
     if uploaded_file is not None:
         df_source = load_data_and_enrich(uploaded_file, month_input)
@@ -228,7 +229,7 @@ else:
 # Khu vực hiển thị kết quả Thẻ Bài
 def render_cards(df_to_render, is_payment_tab=False):
     if len(df_to_render) > 50:
-        st.warning(f"⚠️ Dữ liệu lớn ({len(df_to_render)} trạm), ứng dụng hiển thị dạng thẻ dọc cho 50 trạm đầu tiên để chống đứng máy.")
+        st.warning(f"⚠️ Ứng dụng hiển thị mượt dạng thẻ dọc cho 50 trạm đầu tiên để chống đứng máy. Anh/chị xem toàn bộ danh sách ở Bảng Tổng Hợp bên dưới.")
         display_cards = df_to_render.head(50)
     else:
         display_cards = df_to_render
@@ -271,20 +272,35 @@ if not df_source.empty:
                 st.warning("❌ Rất tiếc! Không tìm thấy mã trạm nào khớp với dữ liệu bạn cung cấp.")
             else:
                 st.success(f"✅ Móc nối thành công! Bắt được **{len(df_display)}** trạm.")
+                
+                st.markdown("### 🏷️ Chi Tiết Dạng Thẻ (Dành cho Điện thoại)")
                 render_cards(df_display, is_payment_tab=False)
+                
+                st.markdown("---")
+                st.markdown("### 📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)")
+                df_clean_tab1 = df_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
+                st.dataframe(df_clean_tab1, use_container_width=True, hide_index=True)
                 
     # ------------ TAB 2: QUẢN LÝ TỔNG THANH TOÁN THÁNG ------------
     with tab2:
         st.markdown(f"### 💵 Các trạm Cần Thanh Toán trong **{month_input}**")
         with st.form(key='payment_form'):
-            st.info("Bấm nút kính lúp bên dưới để chắt lọc toàn bộ những trạm có Ngày tới hạn trùng với tháng trên.")
-            submit_payment_filter = st.form_submit_button(label="🔍 LỌC CÁC TRẠM TỚI HẠN THANH TOÁN", use_container_width=True)
+            st.info("Bấm lọc để thống kê Số Tiền tổng của tháng. Có thể nhập mã CỤ THỂ 1 TRẠM phía dưới để rà soát.")
+            search_tab2 = st.text_input("🔍 Tra cứu cụ thể một (hoặc nhiều) mã trạm trong DS của tháng này (Để trống là Tính Tổng Tất Cả):", placeholder="Ví dụ: HCM001, HCM002...")
+            submit_payment_filter = st.form_submit_button(label="🔍 LỌC CÁC TRẠM TỚI HẠN THANH TOÁN THÁNG NÀY", use_container_width=True)
             
         if submit_payment_filter:
             df_pay_display = df_source[df_source["__is_due_this_month__"] == True].copy()
             
+            # Lọc theo trạm cụ thể nếu người dùng có gõ
+            if search_tab2.strip():
+                target_stations_2 = [s.strip().lower() for s in search_tab2.replace(',', '\n').split('\n') if s.strip()]
+                if target_stations_2:
+                    mask2 = df_pay_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations_2)
+                    df_pay_display = df_pay_display[mask2]
+            
             if df_pay_display.empty:
-                st.warning(f"❌ Không có trạm nào đến hạn thanh toán trong tháng {month_input}.")
+                st.warning(f"❌ Các mã trạm đó không cần thanh toán trong tháng {month_input} này.")
             else:
                 total_stations = len(df_pay_display)
                 total_amount = df_pay_display["__raw_amount__"].sum()
@@ -293,17 +309,29 @@ if not df_source.empty:
                 st.snow()
                 st.success(f"🔥 **TỔNG KẾT BÁO CÁO NHANH THÁNG {month_input}:**")
                 colA, colB = st.columns(2)
-                colA.metric("🏢 Tổng số trạm đến hạn:", f"{total_stations} trạm")
-                colB.metric("💰 Tổng tiền cần giải ngân:", f"{total_amount:,.0f} VNĐ")
+                colA.metric("🏢 Tổng số trạm hiển thị:", f"{total_stations} trạm")
+                colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount:,.0f} VNĐ")
                 
                 st.markdown("---")
+                st.markdown("### 🏷️ Chi Tiết Các Trạm Trong Hạng Mục")
                 render_cards(df_pay_display, is_payment_tab=True)
                 
-    # BỘ XUẤT DỮ LIỆU CHUNG NẰM DƯỚI CÙNG
-    st.markdown("---")
-    with st.expander("📊 Bấm Thêm Vào Đây Để Bật Lại Bảng Báo Cáo Dạng Lưới Ngang Toàn Bộ Màn Hình", expanded=False):
-        # Ẩn 2 cột kỹ thuật
-        df_clean = df_source.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
-        st.dataframe(df_clean, use_container_width=True, hide_index=True)
+                st.markdown("---")
+                st.markdown("### 📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)")
+                df_clean_tab2 = df_pay_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
+                st.dataframe(df_clean_tab2, use_container_width=True, hide_index=True)
+                
+                # Nút tải xuống cho báo cáo Tab 2
+                output2 = io.BytesIO()
+                with pd.ExcelWriter(output2, engine='openpyxl') as writer:
+                    df_clean_tab2.to_excel(writer, index=False, sheet_name='TraCuuThang')
+                excel_data2 = output2.getvalue()
+                st.download_button(
+                    label="🔽 NHẤN TẢI XUỐNG BÁO CÁO THANH TOÁN 1 THÁNG NÀY (EXCEL)",
+                    data=excel_data2,
+                    file_name=f"Bao_Cao_Thanh_Toan_{month_input.replace('/','_')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
 else:
-    st.info("💡 Hệ thống trống Dữ Liệu Cơ Sở. Xin vui lòng cấu hình file Excel.")
+    st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động hiển thị ra khi quét thấy.")
