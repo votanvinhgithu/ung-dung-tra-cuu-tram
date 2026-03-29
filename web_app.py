@@ -114,14 +114,45 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         "__is_due_this_month__": []
     }
     
+    import re
     for _, row in df_res.iterrows():
         ma = str(row.get("mã trạm", "")).strip().lower()
         info = pay_dict.get(ma, {})
+        
+        # Tiền gốc từ cột "số tiền thanh toán" ở Sheet 2 (đang là tiền thuể 1 tháng)
+        base_monthly = info.get("__raw_amount__", 0.0)
+        
+        # Đọc chu kỳ thanh toán ở Sheet 1 (cột này có sẵn trong dataframe df_res)
+        raw_cycle = str(row.get("chu kỳ thanh toán cho chủ nhà", "1")).strip().lower()
+        
+        # Xử lý ngoại lệ "năm" -> nhân thêm hệ số 12
+        multiplier = 12.0 if "năm" in raw_cycle else 1.0
+        
+        try:
+            # Rút trích con số trong chuỗi "6 tháng", "1 năm"
+            cycle_digits = re.sub(r'[^\d.]', '', raw_cycle.replace(',', '.'))
+            cycle_val = float(cycle_digits) if cycle_digits else 1.0
+            if cycle_val == 0.0: cycle_val = 1.0 # Tránh chia/nhân 0
+        except:
+            cycle_val = 1.0
+            
+        real_cycle = cycle_val * multiplier
+        
+        # TRỌNG TÂM: SỐ TIỀN THANH TOÁN = Tiền 1 tháng * Số tháng chu kỳ
+        calc_amount = base_monthly * real_cycle
+        
+        if calc_amount > 0:
+            formatted_amount = f"{calc_amount:,.0f}"
+        else:
+            formatted_amount = "-"
+            
         new_cols["Ngày tới hạn TT trong tháng"].append(info.get("Ngày tới hạn TT trong tháng", "-"))
         new_cols["Ngày TT kỳ trước"].append(info.get("Ngày TT kỳ trước", "-"))
         new_cols["Ngày đến hạn TT kỳ tiếp theo"].append(info.get("Ngày đến hạn TT kỳ tiếp theo", "-"))
-        new_cols["Số tiền cần thanh toán"].append(info.get("Số tiền cần thanh toán", "-"))
-        new_cols["__raw_amount__"].append(info.get("__raw_amount__", 0.0))
+        
+        # Ghi đè vào kết quả hiển thị
+        new_cols["Số tiền cần thanh toán"].append(formatted_amount)
+        new_cols["__raw_amount__"].append(calc_amount)
         new_cols["__is_due_this_month__"].append(info.get("__is_due_this_month__", False))
         
     for k, v in new_cols.items():
