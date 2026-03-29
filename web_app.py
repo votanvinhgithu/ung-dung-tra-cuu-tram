@@ -574,11 +574,24 @@ if not df_source.empty:
             else:
                 st.success(f"✅ Móc nối thành công! Bắt được **{len(df_display)}** trạm.")
                 
-                st.markdown("### 📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)")
+                st.markdown('<h3 style="color:red; font-weight:bold;">📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)</h3>', unsafe_allow_html=True)
                 df_clean_tab1 = df_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
                 # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
                 df_clean_tab1.insert(0, 'STT', range(1, len(df_clean_tab1) + 1))
-                st.dataframe(df_clean_tab1, use_container_width=True, hide_index=True)
+                
+                # HTML Đỏ Đậm Style cho Tab 1
+                st.markdown("""
+                <style>
+                .red-header-table-general { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                .red-header-table-general th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                .red-header-table-general td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                .red-header-table-general tr:nth-child(even) { background-color: #f9f9f9; }
+                .red-header-table-general tr:hover { background-color: #f1f1f1; }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                html_report_1 = df_clean_tab1.to_html(index=False, classes="red-header-table-general", escape=False)
+                st.markdown(html_report_1, unsafe_allow_html=True)
                 
                 st.markdown("---")
                 st.markdown("### 🏷️ Chi Tiết Dạng Thẻ (Dành cho Vuốt Trên Điện Thoại)")
@@ -643,11 +656,24 @@ if not df_source.empty:
                 colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount:,.0f} VNĐ")
                 
                 st.markdown("---")
-                st.markdown("### 📊 Tổng Hợp Lưới Ngang (Báo cáo Lọc Dạng Bảng Excel)")
+                st.markdown('<h3 style="color:red; font-weight:bold;">📊 Tổng Hợp Lưới Ngang (Báo cáo Lọc Dạng Bảng)</h3>', unsafe_allow_html=True)
                 df_clean_tab2 = df_pay_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
                 # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
                 df_clean_tab2.insert(0, 'STT', range(1, len(df_clean_tab2) + 1))
-                st.dataframe(df_clean_tab2, use_container_width=True, hide_index=True)
+                
+                # HTML Đỏ Đậm Style cho Tab 2
+                st.markdown("""
+                <style>
+                .red-header-table-general { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                .red-header-table-general th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                .red-header-table-general td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                .red-header-table-general tr:nth-child(even) { background-color: #f9f9f9; }
+                .red-header-table-general tr:hover { background-color: #f1f1f1; }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                html_report_2 = df_clean_tab2.to_html(index=False, classes="red-header-table-general", escape=False)
+                st.markdown(html_report_2, unsafe_allow_html=True)
 
                 st.markdown("---")
                 st.markdown("### 🏷️ Chi Tiết Các Trạm (Dạng Thẻ Điện Thoại Phóng To)")
@@ -889,11 +915,18 @@ if not df_source.empty:
                         key=lambda col: pd.to_datetime(col, format='%m/%d/%Y', errors='coerce')
                     )
                     
+                    total_stations_5 = len(df_pay_display_5)
+                    total_amount_5 = df_pay_display_5["__raw_amount__"].sum()
+                    
                     st.snow()
                     if date_limit_tab5.strip():
-                        st.success(f"🔥 Khởi tạo Cú Pháp thành công cho **{len(df_pay_display_5)}** hợp đồng tới chốt ngày {date_limit_tab5.strip()}!")
+                        st.success(f"🔥 Khởi tạo Cú Pháp thành công cho **{total_stations_5}** hợp đồng tới chốt ngày {date_limit_tab5.strip()}!")
                     else:
-                        st.success(f"🔥 Đã khởi tạo Cú Pháp Chuyển Khoản thành công cho toàn bộ **{len(df_pay_display_5)}** hợp đồng Chủ Nhà của Cả tháng!")
+                        st.success(f"🔥 Đã khởi tạo Cú Pháp Chuyển Khoản thành công cho toàn bộ **{total_stations_5}** hợp đồng Chủ Nhà của Cả tháng!")
+                        
+                    colA, colB = st.columns(2)
+                    colA.metric("🏢 Tổng số trạm hiển thị:", f"{total_stations_5} trạm")
+                    colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount_5:,.0f} VNĐ")
                     
                     def generate_subject(row):
                         ma_tram = str(row.get("mã trạm", "")).strip().upper()
