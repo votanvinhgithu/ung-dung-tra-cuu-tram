@@ -314,20 +314,30 @@ def load_revenue_data_v2(file_source, target_month_str):
     except Exception as e:
         return None, None, None
 
-# --- HÀM TỔNG HỢP LỢI NHUẬN 12 THÁNG (TAB 4) ---
-def get_yearly_report_data(file_source, target_year_str, df_source):
-    try:
-        target_year = int(str(target_year_str).strip())
-    except:
-        target_year = datetime.now().year
-        
-    months = [f"{m:02d}" for m in range(1, 13)]
+# --- HÀM TỔNG HỢP LỢI NHUẬN (TAB 4) ---
+def get_profit_report_data(file_source, time_input_str, df_source):
+    time_input_str = str(time_input_str).strip()
+    parts = time_input_str.split('/')
+    if len(parts) == 2:
+        try:
+            months = [f"{int(parts[0]):02d}"]
+            target_year = int(parts[1])
+        except:
+            months = [f"{datetime.now().month:02d}"]
+            target_year = datetime.now().year
+    else:
+        try:
+            target_year = int(time_input_str)
+            months = [f"{m:02d}" for m in range(1, 13)]
+        except:
+            target_year = datetime.now().year
+            months = [f"{m:02d}" for m in range(1, 13)]
     
     # 1. TỔNG TIỀN CHỦ NHÀ
     chu_nha_totals = []
     for m in months:
         target_m_str = f"{m}/{target_year}"
-        df_pay = enrich_payment_data(df_source.copy(), target_m_str)
+        df_pay = load_data_and_enrich_v3(file_source, target_m_str)
         if df_pay is not None and not df_pay.empty:
             df_pay_m = df_pay[df_pay["__is_due_this_month__"] == True]
             tot = df_pay_m["__raw_amount__"].sum()
@@ -403,16 +413,17 @@ def get_yearly_report_data(file_source, target_year_str, df_source):
     
     # 3. BUILD DATAFRAME TỔNG
     records = []
-    for i, m in enumerate(months):
-        sum_rev = viettel_totals[i] + vina_totals[i] + mobi_totals[i]
+    for i, m_str in enumerate(months):
+        m_idx = int(m_str) - 1
+        sum_rev = viettel_totals[m_idx] + vina_totals[m_idx] + mobi_totals[m_idx]
         chu_nha = chu_nha_totals[i]
         profit = (sum_rev / 1.1) - chu_nha
         
         records.append({
-            "Tháng": f"{m}/{target_year}",
-            "Doanh thu Viettel": viettel_totals[i],
-            "Doanh thu Vina": vina_totals[i],
-            "Doanh thu Mobi": mobi_totals[i],
+            "Tháng": f"{m_str}/{target_year}",
+            "Doanh thu Viettel": viettel_totals[m_idx],
+            "Doanh thu Vina": vina_totals[m_idx],
+            "Doanh thu Mobi": mobi_totals[m_idx],
             "Tổng Doanh Thu": sum_rev,
             "Tiền Chủ Nhà": chu_nha,
             "Lợi nhuận": profit
@@ -743,25 +754,25 @@ if not df_source.empty:
 
     # ------------ TAB 4: BÁO CÁO LỢI NHUẬN CÔNG TY ------------
     with tab4:
-        st.markdown(f"### 📈 Báo Cáo KQKD Công Ty Cả Năm (Doanh Thu vs Chi Phí)")
+        st.markdown(f"### 📈 Báo Cáo KQKD Công Ty (Doanh Thu vs Chi Phí)")
         with st.form(key='profit_yearly_form'):
-            st.info("Nhập vào Năm định dạng YYYY (Ví dụ: 2026). Hệ thống sẽ tự động tổng hợp Chéo toàn bộ Doanh Thu và Chi phí 12 tháng!")
-            year_input_tab4 = st.text_input("📅 Nhập định dạng Năm Tài Chính cần xem (YYYY):", value=str(datetime.now().year))
-            submit_profit = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN 12 THÁNG", use_container_width=True)
+            st.info("💡 Bạn có thể tra theo YYYY (Ví dụ: 2026) để xem 12 tháng, HOẶC tra theo MM/YYYY (Ví dụ: 03/2026) để xem 1 tháng cụ thể!")
+            time_input_tab4 = st.text_input("📅 Nhập định dạng Năm (YYYY) hoặc Tháng/Năm (MM/YYYY):", value=str(datetime.now().year))
+            submit_profit = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN TÀI CHÍNH", use_container_width=True)
             
         if submit_profit:
             f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
             if f_source is None:
                 st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
             else:
-                with st.spinner(f"Hệ thống đang xào nấu dữ liệu Doanh thu & Chi phí 12 tháng của năm {year_input_tab4}... (Vui lòng chờ vài giây)"):
-                    df_report_raw = get_yearly_report_data(f_source, year_input_tab4, df_source)
+                with st.spinner(f"Hệ thống đang xào nấu luồng Doanh thu & Chi phí cho mốc thời gian {time_input_tab4}... (Vui lòng chờ vài giây)"):
+                    df_report_raw = get_profit_report_data(f_source, time_input_tab4, df_source)
                 
                 st.snow()
-                st.success(f"🔥 CẬP NHẬT HOÀN TẤT LỢI NHUẬN CẢ NĂM {year_input_tab4}!")
+                st.success(f"🔥 CẬP NHẬT HOÀN TẤT LỢI NHUẬN TÀI CHÍNH CHO KỲ: {time_input_tab4}!")
                 
                 # Biểu đồ
-                st.markdown(f"### 📊 Biểu đồ Lợi Nhuận Năm {year_input_tab4}")
+                st.markdown(f"### 📊 Biểu đồ Lợi Nhuận Kỳ {time_input_tab4}")
                 chart_data = df_report_raw.rename(columns={
                     "Tổng Doanh Thu": "Tổng Doanh Thu",
                     "Tiền Chủ Nhà": "Tổng Tiền Trả Chủ Nhà",
@@ -779,12 +790,12 @@ if not df_source.empty:
                     st.bar_chart(chart_data)
                 
                 # Bảng chi tiết
-                st.markdown(f"### 📑 Bảng Tổng Hợp Dòng Tiền 12 Tháng Năm {year_input_tab4}")
+                st.markdown(f"### 📑 Bảng Tổng Hợp Dòng Tiền Kỳ {time_input_tab4}")
                 df_report_display = df_report_raw.copy()
                 for col in ["Doanh thu Viettel", "Doanh thu Vina", "Doanh thu Mobi", "Tổng Doanh Thu", "Tiền Chủ Nhà", "Lợi nhuận"]:
                     df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.0f}" if x != 0 else "-")
                     
-                df_report_display.insert(0, 'STT', range(1, 13))
+                df_report_display.insert(0, 'STT', range(1, len(df_report_display) + 1))
                 
                 df_report_display.rename(columns={
                     "Tháng": "Tháng mm/yyyy",
