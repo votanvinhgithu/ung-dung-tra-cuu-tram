@@ -273,6 +273,14 @@ def load_revenue_data_v1(file_source, target_month_str):
                 })
                 
             df_clean = pd.DataFrame(records)
+            
+            # Sắp xếp theo ngày tăng dần từ đầu tháng tới cuối tháng
+            if not df_clean.empty:
+                df_clean = df_clean.sort_values(
+                    by=f'Kỳ {provider_keyword} thanh toán',
+                    key=lambda col: pd.to_datetime(col, format='%m/%d/%Y', errors='coerce')
+                )
+                
             return df_clean
             
         return process_provider("Viettel"), process_provider("Vina"), process_provider("Mobi")
@@ -538,7 +546,12 @@ if not df_source.empty:
                 st.snow()
                 st.success(f"🔥 **BÁO CÁO DOANH THU CÁC NHÀ MẠNG THÁNG {month_input_tab3} HOÀN TẤT!**")
                 
-                st.markdown("### 🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng")
+                # CSS Xuyên Tâm để đổi màu header các lưới Dataframe (Nếu Streamlit version cũ)
+                st.markdown("""<style>
+                div[data-testid="stDataFrame"] th { color: red !important; font-weight: 900 !important; }
+                </style>""", unsafe_allow_html=True)
+                
+                st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>', unsafe_allow_html=True)
                 df_summ = pd.DataFrame({
                     "Tháng Công ty có doanh thu": [month_input_tab3],
                     "sum số tiền Viettel thanh toán": [f"{sv:,.0f}"],
@@ -548,18 +561,21 @@ if not df_source.empty:
                 })
                 # Chèn STT
                 df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
-                st.dataframe(df_summ, use_container_width=True, hide_index=True)
+                
+                # Tạo bộ style tô đậm màu đỏ riêng cho Dataframe Header
+                style_cols = [{'selector': 'th', 'props': [('color', 'red !important'), ('font-weight', 'bold !important')]}]
+                st.dataframe(df_summ.style.set_table_styles(style_cols), use_container_width=True, hide_index=True)
                 
                 def render_provider_table(df_prov, name, b_num):
                     if df_prov is not None and not df_prov.empty:
                         st.markdown(f"---")
-                        st.markdown(f"### 📡 Bảng {b_num}: Doanh thu Trạm {name} TT")
+                        st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
                         df_d = df_prov.drop(['__raw_payment__'], axis=1, errors='ignore')
                         df_d.insert(0, 'STT', range(1, len(df_d) + 1))
-                        st.dataframe(df_d, use_container_width=True, hide_index=True)
+                        st.dataframe(df_d.style.set_table_styles(style_cols), use_container_width=True, hide_index=True)
                     else:
                         st.markdown(f"---")
-                        st.markdown(f"### 📡 Bảng {b_num}: Doanh thu Trạm {name} TT")
+                        st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
                         st.info(f"Không có số liệu hoặc thiếu Sheet '{name}' chưa đúng tên theo yêu cầu.")
                         
                 render_provider_table(df_viettel, "Viettel", 2)
