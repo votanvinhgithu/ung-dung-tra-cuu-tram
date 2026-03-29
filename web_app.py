@@ -771,7 +771,8 @@ if not df_source.empty:
                 st.snow()
                 st.success(f"🔥 CẬP NHẬT HOÀN TẤT LỢI NHUẬN TÀI CHÍNH CHO KỲ: {time_input_tab4}!")
                 
-                # Biểu đồ
+                # Biểu đồ Cột Song Song thay vì Chồng lên nhau (Dùng Altair có sẵn của Streamlit)
+                import altair as alt
                 st.markdown(f"### 📊 Biểu đồ Lợi Nhuận Kỳ {time_input_tab4}")
                 chart_data = df_report_raw.rename(columns={
                     "Tổng Doanh Thu": "Tổng Doanh Thu",
@@ -779,15 +780,27 @@ if not df_source.empty:
                     "Lợi nhuận": "Lợi Nhuận Công Ty"
                 }).set_index("Tháng")[["Tổng Doanh Thu", "Tổng Tiền Trả Chủ Nhà", "Lợi Nhuận Công Ty"]]
                 
-                # Cột 1 màu đỏ, Cột 2 màu tím, Cột 3 màu xanh dương đậm
-                try:
-                    st.bar_chart(
-                        chart_data,
-                        color=["#FF0000", "#800080", "#00008B"]
-                    )
-                except Exception as chart_e:
-                    # Fallback phòng trường hợp Streamlit quá cũ (sẽ tự động phân màu random)
-                    st.bar_chart(chart_data)
+                df_melted = chart_data.reset_index().melt(
+                    id_vars=['Tháng'], 
+                    value_vars=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty'], 
+                    var_name='Chỉ Tiêu', 
+                    value_name='Số Tiền (VNĐ)'
+                )
+                
+                # Biểu đồ 3 cột tách biệt (chuẩn song song)
+                chart = alt.Chart(df_melted).mark_bar().encode(
+                    x=alt.X('Chỉ Tiêu:N', axis=alt.Axis(title=None, labels=False, ticks=False)),
+                    y=alt.Y('Số Tiền (VNĐ):Q', title='Giá Trị (VNĐ)'),
+                    color=alt.Color('Chỉ Tiêu:N', scale=alt.Scale(
+                        domain=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty'],
+                        range=['#FF0000', '#800080', '#00008B']
+                    ), legend=alt.Legend(orient='top', title=None)),
+                    column=alt.Column('Tháng:N', header=alt.Header(title=None, labelOrient='bottom', labelAlign='center'))
+                ).configure_view(
+                    stroke='transparent'
+                )
+                
+                st.altair_chart(chart, use_container_width=True)
                 
                 # Bảng chi tiết
                 st.markdown(f"### 📑 Bảng Tổng Hợp Dòng Tiền Kỳ {time_input_tab4}")
