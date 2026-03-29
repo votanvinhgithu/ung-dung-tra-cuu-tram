@@ -334,6 +334,8 @@ if not df_source.empty:
                 st.markdown("---")
                 st.markdown("### 📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)")
                 df_clean_tab1 = df_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
+                # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
+                df_clean_tab1.insert(0, 'STT', range(1, len(df_clean_tab1) + 1))
                 st.dataframe(df_clean_tab1, use_container_width=True, hide_index=True)
                 
     # ------------ TAB 2: QUẢN LÝ TỔNG THANH TOÁN THÁNG ------------
@@ -374,6 +376,8 @@ if not df_source.empty:
                 st.markdown("---")
                 st.markdown("### 📊 Tổng Hợp Lưới Ngang (Xem trọn bộ Hàng Ngang)")
                 df_clean_tab2 = df_pay_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
+                # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
+                df_clean_tab2.insert(0, 'STT', range(1, len(df_clean_tab2) + 1))
                 st.dataframe(df_clean_tab2, use_container_width=True, hide_index=True)
                 
                 # Nút tải xuống cho báo cáo Tab 2
