@@ -187,11 +187,25 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
 @st.cache_data
 def load_revenue_data_v1(file_source, target_month_str):
     try:
+        parts = str(target_month_str).strip().split('/')
+        if len(parts) == 2:
+            try:
+                target_month = int(parts[0])
+                target_year  = int(parts[1])
+            except:
+                target_month = datetime.now().month
+                target_year = datetime.now().year
+        else:
+            target_month = datetime.now().month
+            target_year = datetime.now().year
+            
         xl = pd.ExcelFile(file_source)
         sheets = xl.sheet_names
+        
         def process_provider(provider_keyword):
             target_sheet = next((s for s in sheets if provider_keyword.lower() in s.lower()), None)
             if not target_sheet: return None
+            
             df = pd.read_excel(file_source, sheet_name=target_sheet)
             if df.empty: return None
             
@@ -204,33 +218,61 @@ def load_revenue_data_v1(file_source, target_month_str):
             for c in df.columns:
                 if ("trả/tháng" in str(c).lower() or "số tiền" in str(c).lower()) and (c != df.columns[-1]) and (c != ma_col):
                     monthly_col = c; break
-                        
-            df_clean = pd.DataFrame()
-            df_clean['Mã trạm'] = df[ma_col]
-            try:
-                raw_monthly = df[monthly_col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
-                df_clean[f'Số tiền {provider_keyword} trả/tháng'] = pd.to_numeric(raw_monthly, errors='coerce').fillna(0)
-            except:
-                df_clean[f'Số tiền {provider_keyword} trả/tháng'] = 0
-                
-            parts = str(target_month_str).strip().split('/')
-            if len(parts) == 2:
-                default_date = f"{parts[0]}/01/{parts[1]}"
-            else:
-                default_date = target_month_str
-                
-            df_clean[f'Kỳ {provider_keyword} thanh toán'] = default_date
             
             last_col_idx = df.columns[-1]
-            try:
-                raw_payment = df[last_col_idx].astype(str).str.replace(r'[^\d.-]', '', regex=True)
-                df_clean[f'__raw_payment__'] = pd.to_numeric(raw_payment, errors='coerce').fillna(0)
-            except:
-                df_clean[f'__raw_payment__'] = 0.0
+            date_cols = [c for c in df.columns if c != ma_col and c != monthly_col and c != last_col_idx]
+            
+            import re
+            records = []
+            
+            for _, row in df.iterrows():
+                ma_tram = str(row[ma_col]).strip().lower() if pd.notna(row[ma_col]) else ""
+                if not ma_tram or ma_tram == 'nan': continue
                 
-            df_clean = df_clean[df_clean['Mã trạm'].notna() & (df_clean['Mã trạm'].astype(str).str.strip() != '') & (df_clean['Mã trạm'].astype(str).str.strip().str.lower() != 'nan')]
-            df_clean[f'Số tiền {provider_keyword} trả/tháng'] = df_clean[f'Số tiền {provider_keyword} trả/tháng'].apply(lambda x: f"{x:,.0f}" if x > 0 else "-")
-            df_clean[f'Số tiền {provider_keyword} thanh toán'] = df_clean[f'__raw_payment__'].apply(lambda x: f"{x:,.0f}" if x > 0 else "-")
+                # Scan tìm tất cả các ngày (từ N+1 đến N+x)
+                dates = []
+                for c in date_cols:
+                    val = row[c]
+                    if pd.notna(val):
+                        if isinstance(val, (pd.Timestamp, datetime)):
+                            dates.append(pd.to_datetime(val))
+                        else:
+                            try:
+                                d = pd.to_datetime(val)
+                                dates.append(d)
+                            except:
+                                pass
+                
+                # Lọc xem trạm này CÓ kỳ thanh toán trùng với TRONG THÁNG đang tra cứu không
+                due_this_month = [d for d in dates if d.year == target_year and d.month == target_month]
+                if not due_this_month:
+                    continue # BỎ QUA nếu KHÔNG CÓ KỲ NÀO rơi vào tháng này
+                    
+                due_date = due_this_month[0]
+                
+                # Xử lý Rút Giá trị Trả/Tháng
+                raw_monthly = str(row[monthly_col]).replace(',', '')
+                try:
+                    monthly_val = float(re.sub(r'[^\d.-]', '', raw_monthly))
+                except:
+                    monthly_val = 0.0
+                    
+                # Lấy Mặc Định Giá trị từ Cột CHÓT CÙNG (Số Tiền Thanh Toán Doanh Thu)
+                raw_payment = str(row[last_col_idx]).replace(',', '')
+                try:
+                    payment_val = float(re.sub(r'[^\d.-]', '', raw_payment))
+                except:
+                    payment_val = 0.0
+                    
+                records.append({
+                    'Mã trạm': str(row[ma_col]).strip() if pd.notna(row[ma_col]) else "",
+                    f'Số tiền {provider_keyword} trả/tháng': f"{monthly_val:,.0f}" if monthly_val > 0 else "-",
+                    f'Kỳ {provider_keyword} thanh toán': due_date.strftime('%m/%d/%Y'),
+                    f'Số tiền {provider_keyword} thanh toán': f"{payment_val:,.0f}" if payment_val > 0 else "-",
+                    '__raw_payment__': payment_val
+                })
+                
+            df_clean = pd.DataFrame(records)
             return df_clean
             
         return process_provider("Viettel"), process_provider("Vina"), process_provider("Mobi")
