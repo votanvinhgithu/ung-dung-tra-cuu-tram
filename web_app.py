@@ -858,6 +858,7 @@ if not df_source.empty:
         with st.form(key='subject_form'):
             st.info("💡 Tra cứu theo định dạng Tháng/Năm (MM/YYYY) để kết xuất Cú pháp Content cho Ngân hàng.")
             month_input_tab5 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=datetime.now().strftime('%m/%Y'))
+            date_limit_tab5 = st.text_input("⏳ Lọc HĐ Cần Thanh Toán Tới Mốc Ngày Biên (Để trống xem Cả Tháng):", placeholder="Gõ chuẩn định dạng Tháng/Ngày/Năm (MM/DD/YYYY). Ví dụ: 03/15/2026")
             submit_subject = st.form_submit_button(label="🔍 TẠO DANH SÁCH COPY (NGÂN HÀNG)", use_container_width=True)
             
         if submit_subject:
@@ -869,15 +870,37 @@ if not df_source.empty:
                     df_pay_source_5 = load_data_and_enrich_v3(f_source, month_input_tab5)
                     df_pay_display_5 = df_pay_source_5[df_pay_source_5["__is_due_this_month__"] == True].copy()
                 
+                # Bộ lọc ngày Tối đa
+                if date_limit_tab5.strip():
+                    try:
+                        limit_dt = pd.to_datetime(date_limit_tab5.strip(), format='%m/%d/%Y')
+                        temp_dt = pd.to_datetime(df_pay_display_5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
+                        mask_date = (temp_dt <= limit_dt) & (temp_dt.notna())
+                        df_pay_display_5 = df_pay_display_5[mask_date]
+                    except Exception:
+                        st.warning("⚠️ Lỗi định dạng mốc ngày! Bạn phải gõ dấu '/' theo chuẩn tháng trước ngày sau MM/DD/YYYY.")
+                
                 if df_pay_display_5.empty:
-                    st.warning(f"❌ Không tìm thấy Hợp đồng Trạm nào cần Chuyển Khoản trong tháng {month_input_tab5}.")
+                    st.warning(f"❌ Không tìm thấy Hợp đồng Trạm nào cần Chuyển Khoản thỏa mãn điều kiện lọc trong tháng {month_input_tab5}.")
                 else:
+                    # Sắp xếp lịch giải ngân từ sớm đến trễ
+                    df_pay_display_5 = df_pay_display_5.sort_values(
+                        by="Ngày tới hạn TT trong tháng", 
+                        key=lambda col: pd.to_datetime(col, format='%m/%d/%Y', errors='coerce')
+                    )
+                    
                     st.snow()
-                    st.success(f"🔥 Đã khởi tạo Cú Pháp Chuyển Khoản thành công cho **{len(df_pay_display_5)}** hợp đồng Chủ Nhà!")
+                    if date_limit_tab5.strip():
+                        st.success(f"🔥 Khởi tạo Cú Pháp thành công cho **{len(df_pay_display_5)}** hợp đồng tới chốt ngày {date_limit_tab5.strip()}!")
+                    else:
+                        st.success(f"🔥 Đã khởi tạo Cú Pháp Chuyển Khoản thành công cho toàn bộ **{len(df_pay_display_5)}** hợp đồng Chủ Nhà của Cả tháng!")
                     
                     def generate_subject(row):
                         ma_tram = str(row.get("mã trạm", "")).strip().upper()
                         if pd.isna(ma_tram) or ma_tram == "NAN": ma_tram = ""
+                        
+                        # Loại bỏ các ký tự đặc biệt -, ->, -->, khoảng trắng ra khỏi mã trạm
+                        ma_tram = ma_tram.replace('>', '').replace('-', '').replace(' ', '')
                         
                         raw_hd = str(row.get("Số HĐ với chủ nhà", "")).strip().upper()
                         if pd.isna(raw_hd) or raw_hd == "NAN": raw_hd = ""
@@ -941,8 +964,19 @@ if not df_source.empty:
                     df_clean_tab5 = df_pay_display_5[existing_cols].copy()
                     df_clean_tab5.insert(0, 'STT', range(1, len(df_clean_tab5) + 1))
                     
-                    st.markdown("### 🏷️ Lưới Chi Tiết Cú Pháp Giao Dịch Ngân Hàng")
-                    st.dataframe(df_clean_tab5, use_container_width=True, hide_index=True)
+                    st.markdown('<h3 style="color:red; font-weight:bold;">🏷️ Lưới Chi Tiết Cú Pháp Giao Dịch Ngân Hàng</h3>', unsafe_allow_html=True)
+                    st.markdown("""
+                    <style>
+                    .red-header-table-general { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                    .red-header-table-general th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                    .red-header-table-general td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                    .red-header-table-general tr:nth-child(even) { background-color: #f9f9f9; }
+                    .red-header-table-general tr:hover { background-color: #f1f1f1; }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    html_report_5 = df_clean_tab5.to_html(index=False, classes="red-header-table-general", escape=False)
+                    st.markdown(html_report_5, unsafe_allow_html=True)
                     
                     # Nút Tải file Excel Danh sách Nội dung
                     output5 = io.BytesIO()
