@@ -363,6 +363,12 @@ if not df_source.empty:
             if df_pay_display.empty:
                 st.warning(f"❌ Các mã trạm đó không cần thanh toán trong tháng {month_input_tab2}.")
             else:
+                # SẮP XẾP TỪ NGÀY ĐẦU THÁNG ĐẾN CUỐI THÁNG CHUẨN XÁC
+                df_pay_display = df_pay_display.sort_values(
+                    by="Ngày tới hạn TT trong tháng", 
+                    key=lambda col: pd.to_datetime(col, format='%m/%d/%Y', errors='coerce')
+                )
+                
                 total_stations = len(df_pay_display)
                 total_amount = df_pay_display["__raw_amount__"].sum()
                 
