@@ -184,8 +184,8 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
     return df_res
 
 # --- HÀM XỬ LÝ DOANH THU NHÀ MẠNG (TAB 3) ---
-@st.cache_data
-def load_revenue_data_v1(file_source, target_month_str):
+# (Đã tắt @st.cache_data để file Excel vừa lưu sửa là Cập nhật lên Web ngay lập tức, không bị kẹt bộ nhớ tạm)
+def load_revenue_data_v2(file_source, target_month_str):
     try:
         parts = str(target_month_str).strip().split('/')
         if len(parts) == 2:
@@ -216,7 +216,8 @@ def load_revenue_data_v1(file_source, target_month_str):
                     
             monthly_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
             for c in df.columns:
-                if ("trả/tháng" in str(c).lower() or "số tiền" in str(c).lower()) and (c != df.columns[-1]) and (c != ma_col):
+                c_str = str(c).lower()
+                if ("trả/tháng" in c_str or "số tiền" in c_str or "giá" in c_str or "cước" in c_str) and (c != df.columns[-1]) and (c != ma_col):
                     monthly_col = c; break
             
             last_col_idx = df.columns[-1]
@@ -250,19 +251,15 @@ def load_revenue_data_v1(file_source, target_month_str):
                     
                 due_date = due_this_month[0]
                 
-                # Xử lý Rút Giá trị Trả/Tháng
-                raw_monthly = str(row[monthly_col]).replace(',', '')
-                try:
-                    monthly_val = float(re.sub(r'[^\d.-]', '', raw_monthly))
-                except:
-                    monthly_val = 0.0
+                # Xử lý Rút Giá trị Trả/Tháng (Hỗ trợ tốt dạng số có chấm 5.000.000 của VN)
+                raw_monthly = str(row[monthly_col])
+                digits_m = re.sub(r'\D', '', raw_monthly)
+                monthly_val = float(digits_m) if digits_m else 0.0
                     
                 # Lấy Mặc Định Giá trị từ Cột CHÓT CÙNG (Số Tiền Thanh Toán Doanh Thu)
-                raw_payment = str(row[last_col_idx]).replace(',', '')
-                try:
-                    payment_val = float(re.sub(r'[^\d.-]', '', raw_payment))
-                except:
-                    payment_val = 0.0
+                raw_payment = str(row[last_col_idx])
+                digits_p = re.sub(r'\D', '', raw_payment)
+                payment_val = float(digits_p) if digits_p else 0.0
                     
                 records.append({
                     'Mã trạm': str(row[ma_col]).strip() if pd.notna(row[ma_col]) else "",
@@ -536,7 +533,7 @@ if not df_source.empty:
             if f_source is None:
                 st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
             else:
-                df_viettel, df_vina, df_mobi = load_revenue_data_v1(f_source, month_input_tab3)
+                df_viettel, df_vina, df_mobi = load_revenue_data_v2(f_source, month_input_tab3)
                 
                 sv = df_viettel['__raw_payment__'].sum() if (df_viettel is not None and not df_viettel.empty) else 0.0
                 svina = df_vina['__raw_payment__'].sum() if (df_vina is not None and not df_vina.empty) else 0.0
