@@ -789,7 +789,7 @@ if not df_source.empty:
                 
                 # Biểu đồ 3 cột tách biệt (chuẩn song song, thu nhỏ bề ngang)
                 chart = alt.Chart(df_melted).mark_bar(size=18).encode(
-                    x=alt.X('Chỉ Tiêu:N', axis=alt.Axis(title=None, labels=False, ticks=False)),
+                    x=alt.X('Chỉ Tiêu:N', axis=alt.Axis(title=None, labels=False, ticks=False), sort=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty']),
                     y=alt.Y('Số Tiền (VNĐ):Q', title='Giá Trị (VNĐ)'),
                     color=alt.Color('Chỉ Tiêu:N', scale=alt.Scale(
                         domain=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty'],
