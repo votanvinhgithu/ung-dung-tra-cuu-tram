@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 # --- CẤU HÌNH GIAO DIỆN WEB ---
@@ -552,7 +552,7 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ", "💰 DOANH THU CÁC NHÀ MẠNG", "📈 BÁO CÁO LỢI NHUẬN CÔNG TY"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ", "💰 DOANH THU CÁC NHÀ MẠNG", "📈 BÁO CÁO LỢI NHUẬN CÔNG TY", "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH"])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
     with tab1:
@@ -851,6 +851,113 @@ if not df_source.empty:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
+
+    # ------------ TAB 5: CÚ PHÁP CHUYỂN KHOẢN NH ------------
+    with tab5:
+        st.markdown(f"### 💸 Tự Động Hóa Cú Pháp Chuyển Khoản Ngân Hàng")
+        with st.form(key='subject_form'):
+            st.info("💡 Tra cứu theo định dạng Tháng/Năm (MM/YYYY) để kết xuất Cú pháp Content cho Ngân hàng.")
+            month_input_tab5 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=datetime.now().strftime('%m/%Y'))
+            submit_subject = st.form_submit_button(label="🔍 TẠO DANH SÁCH COPY (NGÂN HÀNG)", use_container_width=True)
+            
+        if submit_subject:
+            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+            if f_source is None:
+                st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích!")
+            else:
+                with st.spinner(f"Hệ thống đang trích xuất Nội dung Chuyển khoản trong {month_input_tab5}..."):
+                    df_pay_source_5 = load_data_and_enrich_v3(f_source, month_input_tab5)
+                    df_pay_display_5 = df_pay_source_5[df_pay_source_5["__is_due_this_month__"] == True].copy()
+                
+                if df_pay_display_5.empty:
+                    st.warning(f"❌ Không tìm thấy Hợp đồng Trạm nào cần Chuyển Khoản trong tháng {month_input_tab5}.")
+                else:
+                    st.snow()
+                    st.success(f"🔥 Đã khởi tạo Cú Pháp Chuyển Khoản thành công cho **{len(df_pay_display_5)}** hợp đồng Chủ Nhà!")
+                    
+                    def generate_subject(row):
+                        ma_tram = str(row.get("mã trạm", "")).strip().upper()
+                        if pd.isna(ma_tram) or ma_tram == "NAN": ma_tram = ""
+                        
+                        raw_hd = str(row.get("Số HĐ với chủ nhà", "")).strip().upper()
+                        if pd.isna(raw_hd) or raw_hd == "NAN": raw_hd = ""
+                        
+                        # Trích lọc HĐ từ đầu đến hết DKV
+                        h_idx = raw_hd.find('DKV')
+                        if h_idx != -1:
+                            hd_clean = raw_hd[:h_idx+3]
+                        else:
+                            hd_clean = raw_hd
+                            
+                        # Loại bỏ "-", "/" và dấu cách
+                        hd_clean = hd_clean.replace('-', '').replace('/', '').replace(' ', '')
+                        
+                        date_str = ""
+                        try:
+                            d_curr_str = str(row.get("Ngày tới hạn TT trong tháng", "")).strip()
+                            d_next_str = str(row.get("Ngày đến hạn TT kỳ tiếp theo", "")).strip()
+                            
+                            d_curr = datetime.strptime(d_curr_str, '%m/%d/%Y')
+                            d_next = datetime.strptime(d_next_str, '%m/%d/%Y')
+                            
+                            # Lùi lại 1 ngày so với kỳ tiếp theo
+                            d_end = d_next - timedelta(days=1)
+                            
+                            str_start = d_curr.strftime('%d%m%Y')
+                            str_end = d_end.strftime('%d%m%Y')
+                            date_str = f"tu ngay {str_start} den {str_end}"
+                        except Exception:
+                            date_str = "tu ngay ... den ..."
+                            
+                        # Format chuỗi tiêu chuẩn
+                        subject = f"Thanh toan thue vi tri {ma_tram} theo HD {hd_clean} {date_str}"
+                        return subject
+
+                    df_pay_display_5["Cú pháp nội dung (Copy App)"] = df_pay_display_5.apply(generate_subject, axis=1)
+                    
+                    # Các cột cố định cần xuất
+                    cols_to_show = [
+                        "mã trạm", 
+                        "giá thuê chủ nhà", 
+                        "Số tiền cần thanh toán", 
+                        "Số TK chủ nhà", 
+                        "Chủ tài khoản", 
+                        "Tên Ngân Hàng", 
+                        "Ngày tới hạn TT trong tháng", 
+                        "Ngày đến hạn TT kỳ tiếp theo", 
+                        "Cú pháp nội dung (Copy App)"
+                    ]
+                    
+                    # Lọc lấy cột thực tế có trong mảng
+                    existing_cols = []
+                    for c in cols_to_show:
+                        if c in df_pay_display_5.columns:
+                            existing_cols.append(c)
+                        else:
+                            # Khớp linh động hoa thường
+                            match = [orig for orig in df_pay_display_5.columns if str(orig).strip().lower() == str(c).lower()]
+                            if match: existing_cols.append(match[0])
+                            
+                    df_clean_tab5 = df_pay_display_5[existing_cols].copy()
+                    df_clean_tab5.insert(0, 'STT', range(1, len(df_clean_tab5) + 1))
+                    
+                    st.markdown("### 🏷️ Lưới Chi Tiết Cú Pháp Giao Dịch Ngân Hàng")
+                    st.dataframe(df_clean_tab5, use_container_width=True, hide_index=True)
+                    
+                    # Nút Tải file Excel Danh sách Nội dung
+                    output5 = io.BytesIO()
+                    with pd.ExcelWriter(output5, engine='openpyxl') as writer:
+                        df_clean_tab5.to_excel(writer, index=False, sheet_name='Banking_Subject')
+                    excel_data5 = output5.getvalue()
+                    
+                    safe_time_5 = month_input_tab5.replace('/', '_')
+                    st.download_button(
+                        label="🔽 TẢI BÁO CÁO DANH SÁCH CÚ PHÁP CHUYỂN KHOẢN (EXCEL)",
+                        data=excel_data5,
+                        file_name=f"Cú_Pháp_Chuyển_Khoản_{safe_time_5}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
 
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
