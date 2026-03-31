@@ -818,7 +818,7 @@ def render_cards(df_to_render, is_payment_tab=False):
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "🔍 LỌc THÔNG TIN MÃ TRẠM",
+        "🔍 LỌC THÔNG TIN MÃ TRẠM",
         "💵 DS TRẠM TT CHỦ NHÀ",
         "💰 DOANH THU CÁC NHÀ MẠNG",
         "📈 BÁO CÁO LỢI NHUẬN CÔNG TY",
@@ -1424,7 +1424,7 @@ if not df_source.empty:
                 
                 # Biểu đồ
                 import altair as alt
-                st.markdown(f'<h3 style="color:#1565c0; font-weight:bold;">📊 Biểu đồ Lợi Nhuận Kỳ {actual_t6} (Đã loại trừ Cá nhân)</h3>', unsafe_allow_html=True)
+                st.markdown(f'<h3 style="color:red; font-weight:bold;">📊 Biểu đồ Lợi Nhuận Kỳ {actual_t6} (Đã loại trừ Cá nhân)</h3>', unsafe_allow_html=True)
                 
                 chart_data_t6 = df_t6_raw.rename(columns={
                     "Tổng Doanh Thu": "Tổng Doanh Thu",
@@ -1440,19 +1440,23 @@ if not df_source.empty:
                 )
                 
                 chart_t6 = alt.Chart(df_melted_t6).mark_bar(size=18).encode(
-                    x=alt.X('Chỉ Tiêu:N', axis=alt.Axis(title=None, labels=False, ticks=False)),
+                    x=alt.X('Chỉ Tiêu:N', axis=alt.Axis(title=None, labels=False, ticks=False), sort=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty']),
                     y=alt.Y('Số Tiền (VNĐ):Q', title='Giá Trị (VNĐ)'),
                     color=alt.Color('Chỉ Tiêu:N', scale=alt.Scale(
                         domain=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty'],
-                        range=['#1565c0', '#6a1b9a', '#2e7d32']
+                        range=['#FF0000', '#800080', '#00008B']
                     ), legend=alt.Legend(orient='top', title=None)),
                     column=alt.Column('Tháng:N', header=alt.Header(title=None, labelOrient='bottom', labelAlign='center'))
-                ).properties(width=75).configure_view(stroke='transparent')
+                ).properties(
+                    width=75 # Ép chiều rộng mỗi tháng là 75 pixel để cột luôn nhỏ xinh
+                ).configure_view(
+                    stroke='transparent'
+                )
                 
                 st.altair_chart(chart_t6, use_container_width=False)
                 
                 # Bảng
-                st.markdown(f'<h3 style="color:#1565c0; font-weight:bold;">📑 Bảng Tổng Hợp Dòng Tiền Kỳ {actual_t6} (Đã loại trừ Cá nhân)</h3>', unsafe_allow_html=True)
+                st.markdown(f'<h3 style="color:red; font-weight:bold;">📑 Bảng Tổng Hợp Dòng Tiền Kỳ {actual_t6} (Đã loại trừ Cá nhân)</h3>', unsafe_allow_html=True)
                 df_t6_display = df_t6_raw.copy()
                 
                 # Hàng tổng cộng
@@ -1485,16 +1489,16 @@ if not df_source.empty:
                 
                 st.markdown("""
                 <style>
-                .blue-header-tab6 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
-                .blue-header-tab6 th { background-color: #e3f2fd !important; color: #1565c0 !important; font-weight: 900 !important; border: 1px solid #bbdefb; padding: 10px; text-align: left; font-size: 15px; }
-                .blue-header-tab6 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
-                .blue-header-tab6 tr:nth-child(even) { background-color: #f9f9f9; }
-                .blue-header-tab6 tr:hover { background-color: #e8f5e9; }
-                .blue-header-tab6 tbody tr:first-child td { color: #2e7d32 !important; font-weight: 900 !important; font-size: 1.5em !important; background-color: #e8f5e9 !important; }
+                .red-header-tab6 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                .red-header-tab6 th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                .red-header-tab6 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                .red-header-tab6 tr:nth-child(even) { background-color: #f9f9f9; }
+                .red-header-tab6 tr:hover { background-color: #f1f1f1; }
+                .red-header-tab6 tbody tr:first-child td { color: #28a745 !important; font-weight: 900 !important; font-size: 1.5em !important; background-color: #e8f5e9 !important; }
                 </style>
                 """, unsafe_allow_html=True)
                 
-                html_t6 = df_t6_display.to_html(index=False, classes="blue-header-tab6", escape=False)
+                html_t6 = df_t6_display.to_html(index=False, classes="red-header-tab6", escape=False)
                 st.markdown(html_t6, unsafe_allow_html=True)
                 
                 out_t6 = io.BytesIO()
