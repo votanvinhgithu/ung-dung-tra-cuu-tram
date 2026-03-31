@@ -57,8 +57,9 @@ def validate_month_year_or_year(val):
             try:
                 sm, sy = [int(p) for p in parts[0].strip().split('/')]
                 em, ey = [int(p) for p in parts[1].strip().split('/')]
-                if 1 <= sm <= 12 and 1 <= em <= 12 and sy > 0 and ey == sy and sm <= em:
-                    return True
+                if 1 <= sm <= 12 and 1 <= em <= 12 and sy > 0 and ey > 0:
+                    if ey > sy or (ey == sy and em >= sm):
+                        return True
             except:
                 pass
         return False
@@ -380,33 +381,39 @@ def load_revenue_data_v2(file_source, target_month_str):
 def get_profit_report_data(file_source, time_input_str, df_source):
     time_input_str = str(time_input_str).strip()
     
+    target_months_years = []
+    
     if '-' in time_input_str:
         p1, p2 = time_input_str.split('-')
         sm, sy = [int(x) for x in p1.strip().split('/')]
         em, ey = [int(x) for x in p2.strip().split('/')]
-        target_year = sy
-        months = [f"{m:02d}" for m in range(sm, em + 1)]
+        
+        curr_m, curr_y = sm, sy
+        while (curr_y < ey) or (curr_y == ey and curr_m <= em):
+            target_months_years.append((curr_m, curr_y))
+            curr_m += 1
+            if curr_m > 12:
+                curr_m = 1
+                curr_y += 1
     else:
         parts = time_input_str.split('/')
         if len(parts) == 2:
             try:
-                months = [f"{int(parts[0]):02d}"]
-                target_year = int(parts[1])
+                target_months_years = [(int(parts[0]), int(parts[1]))]
             except:
-                months = [f"{datetime.now().month:02d}"]
-                target_year = datetime.now().year
+                target_months_years = [(datetime.now().month, datetime.now().year)]
         else:
             try:
                 target_year = int(time_input_str)
-                months = [f"{m:02d}" for m in range(1, 13)]
+                target_months_years = [(m, target_year) for m in range(1, 13)]
             except:
                 target_year = datetime.now().year
-                months = [f"{m:02d}" for m in range(1, 13)]
+                target_months_years = [(m, target_year) for m in range(1, 13)]
     
     # 1. TỔNG TIỀN CHỦ NHÀ
     chu_nha_totals = []
-    for m in months:
-        target_m_str = f"{m}/{target_year}"
+    for m, y in target_months_years:
+        target_m_str = f"{m:02d}/{y}"
         df_pay = load_data_and_enrich_v3(file_source, target_m_str)
         if df_pay is not None and not df_pay.empty:
             df_pay_m = df_pay[df_pay["__is_due_this_month__"] == True]
@@ -420,7 +427,7 @@ def get_profit_report_data(file_source, time_input_str, df_source):
     sheets = xl.sheet_names
     
     def sum_provider_for_year(provider_keyword):
-        monthly_sums = [0.0] * 12
+        monthly_sums = [0.0] * len(target_months_years)
         target_sheet = next((s for s in sheets if provider_keyword.lower() in s.lower()), None)
         if not target_sheet: return monthly_sums
         
@@ -473,9 +480,9 @@ def get_profit_report_data(file_source, time_input_str, df_source):
                         except: pass
             
             for d in dates:
-                if d.year == target_year:
-                    m_idx = d.month - 1
-                    monthly_sums[m_idx] += payment_val
+                for idx, (tm, ty) in enumerate(target_months_years):
+                    if d.month == tm and d.year == ty:
+                        monthly_sums[idx] += payment_val
                     
         return monthly_sums
 
@@ -485,17 +492,16 @@ def get_profit_report_data(file_source, time_input_str, df_source):
     
     # 3. BUILD DATAFRAME TỔNG
     records = []
-    for i, m_str in enumerate(months):
-        m_idx = int(m_str) - 1
-        sum_rev = viettel_totals[m_idx] + vina_totals[m_idx] + mobi_totals[m_idx]
+    for i, (m, y) in enumerate(target_months_years):
+        sum_rev = viettel_totals[i] + vina_totals[i] + mobi_totals[i]
         chu_nha = chu_nha_totals[i]
         profit = (sum_rev / 1.1) - chu_nha
         
         records.append({
-            "Tháng": f"{m_str}/{target_year}",
-            "Doanh thu Viettel": viettel_totals[m_idx],
-            "Doanh thu Vina": vina_totals[m_idx],
-            "Doanh thu Mobi": mobi_totals[m_idx],
+            "Tháng": f"{m:02d}/{y}",
+            "Doanh thu Viettel": viettel_totals[i],
+            "Doanh thu Vina": vina_totals[i],
+            "Doanh thu Mobi": mobi_totals[i],
             "Tổng Doanh Thu": sum_rev,
             "Tiền Chủ Nhà": chu_nha,
             "Lợi nhuận": profit
@@ -993,6 +999,7 @@ if not df_source.empty:
                 .red-header-tab4 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
                 .red-header-tab4 tr:nth-child(even) { background-color: #f9f9f9; }
                 .red-header-tab4 tr:hover { background-color: #f1f1f1; }
+                .red-header-tab4 tbody tr:first-child td { color: #28a745 !important; font-weight: 900 !important; font-size: 1.5em !important; background-color: #e8f5e9 !important; }
                 </style>
                 """, unsafe_allow_html=True)
                 
