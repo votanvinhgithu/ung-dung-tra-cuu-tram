@@ -31,6 +31,38 @@ DISPLAY_COLUMNS = TARGET_COLUMNS + EXTRA_PAY_COLS
 def normalize_str(s):
     return str(s).strip().lower()
 
+def display_error(msg):
+    st.markdown(f'<p style="color:red; font-size:1.5em; font-weight:bold;">❌ {msg}</p>', unsafe_allow_html=True)
+
+def validate_month_year(val):
+    val = str(val).strip()
+    if not val: return False
+    try:
+        parts = val.split('/')
+        if len(parts) == 2:
+            m = int(parts[0])
+            y = int(parts[1])
+            if 1 <= m <= 12 and y > 0: return True
+    except:
+        pass
+    return False
+
+def validate_month_year_or_year(val):
+    val = str(val).strip()
+    if not val: return False
+    try:
+        parts = val.split('/')
+        if len(parts) == 1:
+            y = int(parts[0])
+            if y > 0: return True
+        elif len(parts) == 2:
+            m = int(parts[0])
+            y = int(parts[1])
+            if 1 <= m <= 12 and y > 0: return True
+    except:
+        pass
+    return False
+
 def validate_input_date(val):
     val = val.strip()
     if not val:
@@ -631,46 +663,49 @@ if not df_source.empty:
             submit_payment_filter = st.form_submit_button(label="🔍 TRA CỨU DANH SÁCH", use_container_width=True)
             
         if submit_payment_filter:
-            # Nhồi lại Data Engine đặc biệt theo Option Tháng vừa nhập!
-            df_pay_source = load_data_and_enrich_v3(DEFAULT_FILE, month_input_tab2) if DEFAULT_FILE else df_source
-            df_pay_display = df_pay_source[df_pay_source["__is_due_this_month__"] == True].copy()
-            
-            # Lọc theo trạm cụ thể nếu người dùng có gõ
-            if search_tab2.strip():
-                target_stations_2 = [s.strip().lower() for s in search_tab2.replace(',', '\n').split('\n') if s.strip()]
-                if target_stations_2:
-                    mask2 = df_pay_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations_2)
-                    df_pay_display = df_pay_display[mask2]
-                    
-            # Lọc đếm ngược Tới Mốc Khoảng Ngày (Phục vụ Chốt Quỹ Giải Ngân Kế Toán)
-            has_date_error_2 = False
-            v1_ok, e1 = validate_input_date(date_start_tab2)
-            v2_ok, e2 = validate_input_date(date_end_tab2)
-            
-            if not v1_ok:
-                has_date_error_2 = True
-                st.error(e1)
-            elif not v2_ok:
-                has_date_error_2 = True
-                st.error(e2)
-            elif date_start_tab2.strip() or date_end_tab2.strip():
-                try:
-                    temp_dt = pd.to_datetime(df_pay_display['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
-                    mask_date = pd.Series([True] * len(df_pay_display), index=df_pay_display.index)
-                    
-                    if date_start_tab2.strip():
-                        start_dt = pd.to_datetime(date_start_tab2.strip(), format='%m/%d/%Y')
-                        mask_date &= (temp_dt >= start_dt)
+            if not validate_month_year(month_input_tab2):
+                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
+            else:
+                # Nhồi lại Data Engine đặc biệt theo Option Tháng vừa nhập!
+                df_pay_source = load_data_and_enrich_v3(DEFAULT_FILE, month_input_tab2) if DEFAULT_FILE else df_source
+                df_pay_display = df_pay_source[df_pay_source["__is_due_this_month__"] == True].copy()
+                
+                # Lọc theo trạm cụ thể nếu người dùng có gõ
+                if search_tab2.strip():
+                    target_stations_2 = [s.strip().lower() for s in search_tab2.replace(',', '\n').split('\n') if s.strip()]
+                    if target_stations_2:
+                        mask2 = df_pay_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations_2)
+                        df_pay_display = df_pay_display[mask2]
                         
-                    if date_end_tab2.strip():
-                        end_dt = pd.to_datetime(date_end_tab2.strip(), format='%m/%d/%Y')
-                        mask_date &= (temp_dt <= end_dt)
-                        
-                    mask_date &= temp_dt.notna()
-                    df_pay_display = df_pay_display[mask_date]
-                except Exception:
+                # Lọc đếm ngược Tới Mốc Khoảng Ngày (Phục vụ Chốt Quỹ Giải Ngân Kế Toán)
+                has_date_error_2 = False
+                v1_ok, e1 = validate_input_date(date_start_tab2)
+                v2_ok, e2 = validate_input_date(date_end_tab2)
+                
+                if not v1_ok:
                     has_date_error_2 = True
-                    st.error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
+                    display_error(e1)
+                elif not v2_ok:
+                    has_date_error_2 = True
+                    display_error(e2)
+                elif date_start_tab2.strip() or date_end_tab2.strip():
+                    try:
+                        temp_dt = pd.to_datetime(df_pay_display['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
+                        mask_date = pd.Series([True] * len(df_pay_display), index=df_pay_display.index)
+                        
+                        if date_start_tab2.strip():
+                            start_dt = pd.to_datetime(date_start_tab2.strip(), format='%m/%d/%Y')
+                            mask_date &= (temp_dt >= start_dt)
+                            
+                        if date_end_tab2.strip():
+                            end_dt = pd.to_datetime(date_end_tab2.strip(), format='%m/%d/%Y')
+                            mask_date &= (temp_dt <= end_dt)
+                            
+                        mask_date &= temp_dt.notna()
+                        df_pay_display = df_pay_display[mask_date]
+                    except Exception:
+                        has_date_error_2 = True
+                        display_error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
             
             if has_date_error_2:
                 pass
@@ -744,82 +779,85 @@ if not df_source.empty:
             submit_revenue = st.form_submit_button(label="🔍 LÊN BÁO CÁO DOANH THU", use_container_width=True)
             
         if submit_revenue:
-            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
-            if f_source is None:
-                st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
+            if not validate_month_year(month_input_tab3):
+                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
             else:
-                df_viettel, df_vina, df_mobi = load_revenue_data_v2(f_source, month_input_tab3)
-                
-                sv = df_viettel['__raw_payment__'].sum() if (df_viettel is not None and not df_viettel.empty) else 0.0
-                svina = df_vina['__raw_payment__'].sum() if (df_vina is not None and not df_vina.empty) else 0.0
-                smobi = df_mobi['__raw_payment__'].sum() if (df_mobi is not None and not df_mobi.empty) else 0.0
-                total_all = sv + svina + smobi
-                
-                st.snow()
-                st.success(f"🔥 **BÁO CÁO DOANH THU CÁC NHÀ MẠNG THÁNG {month_input_tab3} HOÀN TẤT!**")
-                
-                # Inject Custom HTML Table Style 100% Force Red Bold
-                st.markdown("""
-                <style>
-                .red-header-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
-                .red-header-table th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
-                .red-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
-                .red-header-table tr:nth-child(even) { background-color: #f9f9f9; }
-                .red-header-table tr:hover { background-color: #f1f1f1; }
-                </style>
-                """, unsafe_allow_html=True)
-                
-                st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>', unsafe_allow_html=True)
-                df_summ = pd.DataFrame({
-                    "Tháng Công ty có doanh thu": [month_input_tab3],
-                    "sum số tiền Viettel thanh toán": [f"{sv:,.0f}"],
-                    "sum số tiền Vina thanh toán": [f"{svina:,.0f}"],
-                    "sum số tiền Mobi thanh toán": [f"{smobi:,.0f}"],
-                    "sum tổng số tiền Viettel+Vina+Mobi thanh toán": [f"{total_all:,.0f}"]
-                })
-                # Chèn STT
-                df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
-                
-                # Render Html Table
-                html_summ = df_summ.to_html(index=False, classes="red-header-table", escape=False)
-                st.markdown(html_summ, unsafe_allow_html=True)
-                
-                def render_provider_table(df_prov, name, b_num):
-                    if df_prov is not None and not df_prov.empty:
-                        st.markdown(f"---")
-                        st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
-                        df_d = df_prov.drop(['__raw_payment__'], axis=1, errors='ignore')
-                        df_d.insert(0, 'STT', range(1, len(df_d) + 1))
-                        # Render Html Table
-                        html_d = df_d.to_html(index=False, classes="red-header-table", escape=False)
-                        st.markdown(html_d, unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"---")
-                        st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
-                        st.info(f"Không có số liệu hoặc thiếu Sheet '{name}' chưa đúng tên theo yêu cầu.")
-                        
-                render_provider_table(df_viettel, "Viettel", 2)
-                render_provider_table(df_vina, "Vina", 3)
-                render_provider_table(df_mobi, "Mobi", 4)
-                
-                st.markdown("---")
-                out_rev = io.BytesIO()
-                with pd.ExcelWriter(out_rev, engine='openpyxl') as writer:
-                    df_summ.to_excel(writer, index=False, sheet_name='Tong_Hop_Doanh_Thu')
-                    if df_viettel is not None and not df_viettel.empty:
-                        df_viettel.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Viettel')
-                    if df_vina is not None and not df_vina.empty:
-                        df_vina.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Vina')
-                    if df_mobi is not None and not df_mobi.empty:
-                        df_mobi.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Mobi')
-                        
-                st.download_button(
-                    label="🔽 TẢI XUỐNG FILE TỔNG HỢP DOANH THU (EXCEL)",
-                    data=out_rev.getvalue(),
-                    file_name=f"Bao_Cao_Doanh_Thu_Nha_Mang_{month_input_tab3.replace('/','_')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary"
-                )
+                f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+                if f_source is None:
+                    st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
+                else:
+                    df_viettel, df_vina, df_mobi = load_revenue_data_v2(f_source, month_input_tab3)
+                    
+                    sv = df_viettel['__raw_payment__'].sum() if (df_viettel is not None and not df_viettel.empty) else 0.0
+                    svina = df_vina['__raw_payment__'].sum() if (df_vina is not None and not df_vina.empty) else 0.0
+                    smobi = df_mobi['__raw_payment__'].sum() if (df_mobi is not None and not df_mobi.empty) else 0.0
+                    total_all = sv + svina + smobi
+                    
+                    st.snow()
+                    st.success(f"🔥 **BÁO CÁO DOANH THU CÁC NHÀ MẠNG THÁNG {month_input_tab3} HOÀN TẤT!**")
+                    
+                    # Inject Custom HTML Table Style 100% Force Red Bold
+                    st.markdown("""
+                    <style>
+                    .red-header-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                    .red-header-table th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+                    .red-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                    .red-header-table tr:nth-child(even) { background-color: #f9f9f9; }
+                    .red-header-table tr:hover { background-color: #f1f1f1; }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>', unsafe_allow_html=True)
+                    df_summ = pd.DataFrame({
+                        "Tháng Công ty có doanh thu": [month_input_tab3],
+                        "sum số tiền Viettel thanh toán": [f"{sv:,.0f}"],
+                        "sum số tiền Vina thanh toán": [f"{svina:,.0f}"],
+                        "sum số tiền Mobi thanh toán": [f"{smobi:,.0f}"],
+                        "sum tổng số tiền Viettel+Vina+Mobi thanh toán": [f"{total_all:,.0f}"]
+                    })
+                    # Chèn STT
+                    df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
+                    
+                    # Render Html Table
+                    html_summ = df_summ.to_html(index=False, classes="red-header-table", escape=False)
+                    st.markdown(html_summ, unsafe_allow_html=True)
+                    
+                    def render_provider_table(df_prov, name, b_num):
+                        if df_prov is not None and not df_prov.empty:
+                            st.markdown(f"---")
+                            st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
+                            df_d = df_prov.drop(['__raw_payment__'], axis=1, errors='ignore')
+                            df_d.insert(0, 'STT', range(1, len(df_d) + 1))
+                            # Render Html Table
+                            html_d = df_d.to_html(index=False, classes="red-header-table", escape=False)
+                            st.markdown(html_d, unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"---")
+                            st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
+                            st.info(f"Không có số liệu hoặc thiếu Sheet '{name}' chưa đúng tên theo yêu cầu.")
+                            
+                    render_provider_table(df_viettel, "Viettel", 2)
+                    render_provider_table(df_vina, "Vina", 3)
+                    render_provider_table(df_mobi, "Mobi", 4)
+                    
+                    st.markdown("---")
+                    out_rev = io.BytesIO()
+                    with pd.ExcelWriter(out_rev, engine='openpyxl') as writer:
+                        df_summ.to_excel(writer, index=False, sheet_name='Tong_Hop_Doanh_Thu')
+                        if df_viettel is not None and not df_viettel.empty:
+                            df_viettel.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Viettel')
+                        if df_vina is not None and not df_vina.empty:
+                            df_vina.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Vina')
+                        if df_mobi is not None and not df_mobi.empty:
+                            df_mobi.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Mobi')
+                            
+                    st.download_button(
+                        label="🔽 TẢI XUỐNG FILE TỔNG HỢP DOANH THU (EXCEL)",
+                        data=out_rev.getvalue(),
+                        file_name=f"Bao_Cao_Doanh_Thu_Nha_Mang_{month_input_tab3.replace('/','_')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
 
     # ------------ TAB 4: BÁO CÁO LỢI NHUẬN CÔNG TY ------------
     with tab4:
@@ -830,8 +868,11 @@ if not df_source.empty:
             submit_profit = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN TÀI CHÍNH", use_container_width=True)
             
         if submit_profit:
+            is_valid_t4 = validate_month_year_or_year(time_input_tab4)
             f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
-            if f_source is None:
+            if not is_valid_t4:
+                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
+            elif f_source is None:
                 st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
             else:
                 with st.spinner(f"Hệ thống đang xào nấu luồng Doanh thu & Chi phí cho mốc thời gian {time_input_tab4}... (Vui lòng chờ vài giây)"):
@@ -937,43 +978,46 @@ if not df_source.empty:
             submit_subject = st.form_submit_button(label="🔍 TẠO DANH SÁCH COPY (NGÂN HÀNG)", use_container_width=True)
             
         if submit_subject:
-            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
-            if f_source is None:
-                st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích!")
+            if not validate_month_year(month_input_tab5):
+                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
             else:
-                with st.spinner(f"Hệ thống đang trích xuất Nội dung Chuyển khoản trong {month_input_tab5}..."):
-                    df_pay_source_5 = load_data_and_enrich_v3(f_source, month_input_tab5)
-                    df_pay_display_5 = df_pay_source_5[df_pay_source_5["__is_due_this_month__"] == True].copy()
-                
-                # Bộ lọc Khoảng thời gian
-                has_date_error_5 = False
-                v1_ok, e1 = validate_input_date(date_start_tab5)
-                v2_ok, e2 = validate_input_date(date_end_tab5)
-                
-                if not v1_ok:
-                    has_date_error_5 = True
-                    st.error(e1)
-                elif not v2_ok:
-                    has_date_error_5 = True
-                    st.error(e2)
-                elif date_start_tab5.strip() or date_end_tab5.strip():
-                    try:
-                        temp_dt = pd.to_datetime(df_pay_display_5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
-                        mask_date = pd.Series([True] * len(df_pay_display_5), index=df_pay_display_5.index)
-                        
-                        if date_start_tab5.strip():
-                            start_dt = pd.to_datetime(date_start_tab5.strip(), format='%m/%d/%Y')
-                            mask_date &= (temp_dt >= start_dt)
-                            
-                        if date_end_tab5.strip():
-                            end_dt = pd.to_datetime(date_end_tab5.strip(), format='%m/%d/%Y')
-                            mask_date &= (temp_dt <= end_dt)
-                            
-                        mask_date &= temp_dt.notna()
-                        df_pay_display_5 = df_pay_display_5[mask_date]
-                    except Exception:
+                f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+                if f_source is None:
+                    st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích!")
+                else:
+                    with st.spinner(f"Hệ thống đang trích xuất Nội dung Chuyển khoản trong {month_input_tab5}..."):
+                        df_pay_source_5 = load_data_and_enrich_v3(f_source, month_input_tab5)
+                        df_pay_display_5 = df_pay_source_5[df_pay_source_5["__is_due_this_month__"] == True].copy()
+                    
+                    # Bộ lọc Khoảng thời gian
+                    has_date_error_5 = False
+                    v1_ok, e1 = validate_input_date(date_start_tab5)
+                    v2_ok, e2 = validate_input_date(date_end_tab5)
+                    
+                    if not v1_ok:
                         has_date_error_5 = True
-                        st.error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
+                        display_error(e1)
+                    elif not v2_ok:
+                        has_date_error_5 = True
+                        display_error(e2)
+                    elif date_start_tab5.strip() or date_end_tab5.strip():
+                        try:
+                            temp_dt = pd.to_datetime(df_pay_display_5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
+                            mask_date = pd.Series([True] * len(df_pay_display_5), index=df_pay_display_5.index)
+                            
+                            if date_start_tab5.strip():
+                                start_dt = pd.to_datetime(date_start_tab5.strip(), format='%m/%d/%Y')
+                                mask_date &= (temp_dt >= start_dt)
+                                
+                            if date_end_tab5.strip():
+                                end_dt = pd.to_datetime(date_end_tab5.strip(), format='%m/%d/%Y')
+                                mask_date &= (temp_dt <= end_dt)
+                                
+                            mask_date &= temp_dt.notna()
+                            df_pay_display_5 = df_pay_display_5[mask_date]
+                        except Exception:
+                            has_date_error_5 = True
+                            display_error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
                 
                 if has_date_error_5:
                     pass
