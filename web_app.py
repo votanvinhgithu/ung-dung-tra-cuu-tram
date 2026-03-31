@@ -432,7 +432,7 @@ def get_profit_report_data(file_source, time_input_str, df_source):
     return pd.DataFrame(records)
 
 # --- HÀM XỬ LÝ DỮ LIỆU ĐỌC CƠ BẢN ---
-@st.cache_data
+@st.cache_data(ttl=60) # Tự động xóa bộ nhớ đệm sau 60 giây để cập nhật dữ liệu mới từ GitHub
 def load_data_and_enrich_v3(file_source, target_month_str):
     try:
         xl = pd.ExcelFile(file_source)
