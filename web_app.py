@@ -520,6 +520,12 @@ def load_data_and_enrich_v3(file_source, target_month_str):
                 
         df_filtered = df_filtered[TARGET_COLUMNS]
         
+        # LOẠI BỎ CÁC DÒNG RỖNG VÀ RÁC ĐẦU BẢNG ĐỂ ĐẾM CHÍNH XÁC SỐ TRẠM
+        df_filtered = df_filtered[df_filtered["mã trạm"].notna()]
+        df_filtered = df_filtered[df_filtered["mã trạm"].astype(str).str.strip() != ""]
+        df_filtered = df_filtered[~df_filtered["mã trạm"].astype(str).str.lower().isin(["nan", "null", "mã trạm", "stt", "mã", "mã số"])]
+        df_filtered.reset_index(drop=True, inplace=True)
+        
         # ĐỊNH DẠNG TẤT CẢ NGÀY THÁNG SANG mm/dd/yyyy
         for col in df_filtered.columns:
             if pd.api.types.is_datetime64_any_dtype(df_filtered[col]):
