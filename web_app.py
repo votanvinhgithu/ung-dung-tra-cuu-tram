@@ -31,6 +31,21 @@ DISPLAY_COLUMNS = TARGET_COLUMNS + EXTRA_PAY_COLS
 def normalize_str(s):
     return str(s).strip().lower()
 
+def validate_input_date(val):
+    val = val.strip()
+    if not val:
+        return True, ""
+    try:
+        datetime.strptime(val, '%m/%d/%Y')
+        return True, ""
+    except ValueError:
+        parts = val.split('/')
+        if len(parts) >= 2:
+            thang = parts[0]
+            if len(thang) == 1: thang = "0" + thang
+            return False, f"Bạn đã nhập sai ngày, tháng {thang} không có ngày {val}, vui lòng nhập lại đúng ngày để hệ thống hiển thị kết quả, xin cám ơn"
+        return False, f"Bạn đã nhập sai định dạng ngày, {val} không đúng chuẩn (MM/DD/YYYY), vui lòng nhập lại đúng định dạng để hệ thống hiển thị kết quả, xin cám ơn"
+
 def enrich_payment_data(df_main, df_pay, target_month, target_year):
     pay_dict = {}
     ma_tram_col = None
@@ -628,7 +643,17 @@ if not df_source.empty:
                     df_pay_display = df_pay_display[mask2]
                     
             # Lọc đếm ngược Tới Mốc Khoảng Ngày (Phục vụ Chốt Quỹ Giải Ngân Kế Toán)
-            if date_start_tab2.strip() or date_end_tab2.strip():
+            has_date_error_2 = False
+            v1_ok, e1 = validate_input_date(date_start_tab2)
+            v2_ok, e2 = validate_input_date(date_end_tab2)
+            
+            if not v1_ok:
+                has_date_error_2 = True
+                st.error(e1)
+            elif not v2_ok:
+                has_date_error_2 = True
+                st.error(e2)
+            elif date_start_tab2.strip() or date_end_tab2.strip():
                 try:
                     temp_dt = pd.to_datetime(df_pay_display['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
                     mask_date = pd.Series([True] * len(df_pay_display), index=df_pay_display.index)
@@ -644,9 +669,12 @@ if not df_source.empty:
                     mask_date &= temp_dt.notna()
                     df_pay_display = df_pay_display[mask_date]
                 except Exception:
-                    st.warning("⚠️ Lỗi định dạng ngày chốt sổ! Bạn phải gõ dấu '/' theo mẫu chuẩn tháng MM/DD/YYYY (Ví dụ: 03/15/2026)")
+                    has_date_error_2 = True
+                    st.error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
             
-            if df_pay_display.empty:
+            if has_date_error_2:
+                pass
+            elif df_pay_display.empty:
                 st.warning(f"❌ Rất tiếc, Không tìm thấy Trạm nào cần giải ngân thỏa mãn các lớp điều kiện trong tháng {month_input_tab2}.")
             else:
                 # SẮP XẾP TỪ NGÀY ĐẦU THÁNG ĐẾN CUỐI THÁNG CHUẨN XÁC
@@ -918,7 +946,17 @@ if not df_source.empty:
                     df_pay_display_5 = df_pay_source_5[df_pay_source_5["__is_due_this_month__"] == True].copy()
                 
                 # Bộ lọc Khoảng thời gian
-                if date_start_tab5.strip() or date_end_tab5.strip():
+                has_date_error_5 = False
+                v1_ok, e1 = validate_input_date(date_start_tab5)
+                v2_ok, e2 = validate_input_date(date_end_tab5)
+                
+                if not v1_ok:
+                    has_date_error_5 = True
+                    st.error(e1)
+                elif not v2_ok:
+                    has_date_error_5 = True
+                    st.error(e2)
+                elif date_start_tab5.strip() or date_end_tab5.strip():
                     try:
                         temp_dt = pd.to_datetime(df_pay_display_5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
                         mask_date = pd.Series([True] * len(df_pay_display_5), index=df_pay_display_5.index)
@@ -934,9 +972,12 @@ if not df_source.empty:
                         mask_date &= temp_dt.notna()
                         df_pay_display_5 = df_pay_display_5[mask_date]
                     except Exception:
-                        st.warning("⚠️ Lỗi định dạng mốc ngày! Bạn phải gõ dấu '/' theo chuẩn tháng trước ngày sau MM/DD/YYYY.")
+                        has_date_error_5 = True
+                        st.error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
                 
-                if df_pay_display_5.empty:
+                if has_date_error_5:
+                    pass
+                elif df_pay_display_5.empty:
                     st.warning(f"❌ Không tìm thấy Hợp đồng Trạm nào cần Chuyển Khoản thỏa mãn điều kiện lọc trong tháng {month_input_tab5}.")
                 else:
                     # Sắp xếp lịch giải ngân từ sớm đến trễ
