@@ -509,7 +509,185 @@ def get_profit_report_data(file_source, time_input_str, df_source):
         
     return pd.DataFrame(records)
 
-# --- HÀM XỬ LÝ DỮ LIỆU ĐỌC CƠ BẢN ---
+
+# --- HÀM LẤY DANH SÁCH MÃ TRẠM "CÁ NHÂN" TỪ CÁC SHEET ---
+def get_ca_nhan_ma_trams(file_source):
+    """
+    Quét sheet 2, 3, 4, 5 (index 1..4). Với mỗi sheet, 
+    tìm những hàng có cột đầu tiên chứa 'cá nhân',
+    lấy giá trị cột 2 (mã trạm) rồi trả về set mã trạm loại trừ.
+    """
+    excluded = set()
+    try:
+        if hasattr(file_source, 'seek'):
+            file_source.seek(0)
+        xl = pd.ExcelFile(file_source)
+        sheets = xl.sheet_names
+        
+        for sheet_idx in [1, 2, 3, 4]:  # sheet 2, 3, 4, 5
+            if sheet_idx >= len(sheets):
+                continue
+            sheet_name = sheets[sheet_idx]
+            if hasattr(file_source, 'seek'):
+                file_source.seek(0)
+            df = pd.read_excel(file_source, sheet_name=sheet_name)
+            if df.empty or len(df.columns) < 2:
+                continue
+            col0 = df.columns[0]   # Stt
+            col1 = df.columns[1]   # Mã trạm
+            ca_nhan_rows = df[df[col0].astype(str).str.strip().str.lower() == 'cá nhân']
+            for _, row in ca_nhan_rows.iterrows():
+                ma = str(row[col1]).strip()
+                if ma and ma.lower() not in ('nan', ''):
+                    # Normalize: bỏ phần sau dấu cách (e.g. "SGN0005 (Hung Thanh...)" -> "SGN0005")
+                    ma_clean = ma.split('(')[0].split(' ')[0].strip()
+                    excluded.add(ma_clean.lower())
+    except Exception as e:
+        pass
+    return excluded
+
+
+# --- HÀM TỔNG HỢP LỢI NHUẬN LOẠI TRỪ CÁ NHÂN (TAB 6) ---
+def get_profit_report_data_exclude_ca_nhan(file_source, time_input_str, df_source):
+    excluded_set = get_ca_nhan_ma_trams(file_source)
+    
+    time_input_str = str(time_input_str).strip()
+    target_months_years = []
+    
+    if '-' in time_input_str:
+        p1, p2 = time_input_str.split('-')
+        sm, sy = [int(x) for x in p1.strip().split('/')]
+        em, ey = [int(x) for x in p2.strip().split('/')]
+        curr_m, curr_y = sm, sy
+        while (curr_y < ey) or (curr_y == ey and curr_m <= em):
+            target_months_years.append((curr_m, curr_y))
+            curr_m += 1
+            if curr_m > 12:
+                curr_m = 1
+                curr_y += 1
+    else:
+        parts = time_input_str.split('/')
+        if len(parts) == 2:
+            try:
+                target_months_years = [(int(parts[0]), int(parts[1]))]
+            except:
+                target_months_years = [(datetime.now().month, datetime.now().year)]
+        else:
+            try:
+                target_year = int(time_input_str)
+                target_months_years = [(m, target_year) for m in range(1, 13)]
+            except:
+                target_year = datetime.now().year
+                target_months_years = [(m, target_year) for m in range(1, 13)]
+    
+    # 1. TỔNG TIỀN CHỦ NHÀ (loại trừ Cá nhân)
+    chu_nha_totals = []
+    for m, y in target_months_years:
+        target_m_str = f"{m:02d}/{y}"
+        df_pay = load_data_and_enrich_v3(file_source, target_m_str)
+        if df_pay is not None and not df_pay.empty:
+            df_pay_m = df_pay[df_pay["__is_due_this_month__"] == True].copy()
+            # Loại trừ Cá nhân theo mã trạm
+            df_pay_m = df_pay_m[
+                ~df_pay_m["mã trạm"].astype(str).str.strip().str.lower().isin(excluded_set)
+            ]
+            tot = df_pay_m["__raw_amount__"].sum()
+        else:
+            tot = 0.0
+        chu_nha_totals.append(tot)
+    
+    # 2. TỔNG DOANH THU CÁC NHÀ MẠNG (loại trừ Cá nhân)
+    if hasattr(file_source, 'seek'):
+        file_source.seek(0)
+    xl = pd.ExcelFile(file_source)
+    sheets = xl.sheet_names
+    
+    def sum_provider_exclude(provider_keyword):
+        monthly_sums = [0.0] * len(target_months_years)
+        target_sheet = next((s for s in sheets if provider_keyword.lower() in s.lower()), None)
+        if not target_sheet: return monthly_sums
+        
+        if hasattr(file_source, 'seek'):
+            file_source.seek(0)
+        df = pd.read_excel(file_source, sheet_name=target_sheet)
+        if df.empty: return monthly_sums
+        
+        # Lọc bỏ hàng Cá nhân (cột đầu)
+        col0 = df.columns[0]
+        df = df[df[col0].astype(str).str.strip().str.lower() != 'cá nhân'].copy()
+        
+        ma_col = df.columns[0]
+        valid_cols = [c for c in df.columns if "ghi chú" not in str(c).lower() and "note" not in str(c).lower()]
+        filtered = []
+        for c in valid_cols:
+            if str(c).lower().startswith("unnamed"):
+                if not df[c].replace('', pd.NA).dropna().empty: filtered.append(c)
+            else:
+                filtered.append(c)
+        last_col = filtered[-1] if filtered else df.columns[-1]
+        
+        m_col = None
+        kw_list = ["trả/tháng", "thuê/tháng", "giá thuê", "đơn giá", "mức cước", "số tiền", "cước", "giá"]
+        for kw in kw_list:
+            for c in df.columns:
+                c_str = str(c).lower()
+                if kw in c_str and (c != last_col) and (c != ma_col):
+                    m_col = c; break
+            if m_col: break
+        if not m_col: m_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+        
+        date_cols = [c for c in df.columns if c != ma_col and c != m_col and c != last_col]
+        
+        def parse_num(val):
+            if pd.isna(val): return 0.0
+            if isinstance(val, (int, float)): return float(val)
+            s = str(val).strip()
+            if s.endswith('.0'): s = s[:-2]
+            digits = re.sub(r'\D', '', s)
+            return float(digits) if digits else 0.0
+        
+        for _, row in df.iterrows():
+            payment_val = parse_num(row[last_col])
+            if payment_val == 0: continue
+            
+            dates = []
+            for c in date_cols:
+                val = row[c]
+                if pd.notna(val):
+                    if isinstance(val, (pd.Timestamp, datetime)): dates.append(pd.to_datetime(val))
+                    else:
+                        try: dates.append(pd.to_datetime(val))
+                        except: pass
+            
+            for d in dates:
+                for idx, (tm, ty) in enumerate(target_months_years):
+                    if d.month == tm and d.year == ty:
+                        monthly_sums[idx] += payment_val
+        
+        return monthly_sums
+    
+    viettel_totals = sum_provider_exclude("Viettel")
+    vina_totals    = sum_provider_exclude("Vina")
+    mobi_totals    = sum_provider_exclude("Mobi")
+    
+    # 3. BUILD DATAFRAME TỔNG
+    records = []
+    for i, (m, y) in enumerate(target_months_years):
+        sum_rev = viettel_totals[i] + vina_totals[i] + mobi_totals[i]
+        chu_nha = chu_nha_totals[i]
+        profit  = (sum_rev / 1.1) - chu_nha
+        records.append({
+            "Tháng": f"{m:02d}/{y}",
+            "Doanh thu Viettel": viettel_totals[i],
+            "Doanh thu Vina":    vina_totals[i],
+            "Doanh thu Mobi":    mobi_totals[i],
+            "Tổng Doanh Thu":    sum_rev,
+            "Tiền Chủ Nhà":      chu_nha,
+            "Lợi nhuận":         profit
+        })
+    
+    return pd.DataFrame(records), excluded_set
+
 @st.cache_data(ttl=60) # Tự động xóa bộ nhớ đệm sau 60 giây để cập nhật dữ liệu mới từ GitHub
 def load_data_and_enrich_v3(file_source, target_month_str):
     try:
@@ -639,7 +817,14 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔍 LỌC THÔNG TIN MÃ TRẠM", "💵 DS TRẠM TT CHỦ NHÀ", "💰 DOANH THU CÁC NHÀ MẠNG", "📈 BÁO CÁO LỢI NHUẬN CÔNG TY", "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🔍 LỌc THÔNG TIN MÃ TRẠM",
+        "💵 DS TRẠM TT CHỦ NHÀ",
+        "💰 DOANH THU CÁC NHÀ MẠNG",
+        "📈 BÁO CÁO LỢI NHUẬN CÔNG TY",
+        "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH",
+        "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN"
+    ])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
     with tab1:
@@ -1205,6 +1390,125 @@ if not df_source.empty:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         type="primary"
                     )
+
+    # ------------ TAB 6: BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN ------------
+    with tab6:
+        st.markdown("### 🏛️ Báo Cáo KQKD Công Ty - Loại Trừ Trạm Cá Nhân")
+        st.info("💡 Tab này hoạt động giống Tab 4 nhưng **tự động loại trừ** các trạm được đánh dấu \"Cá nhân\" ở cột Stt trong các Sheet 2, 3, 4, 5 của file dữ liệu.")
+        
+        with st.form(key='profit_excl_form'):
+            st.markdown("**Điền vào Tùy chọn 1 HOẶC Tùy chọn 2, rồi nhấn nút.**")
+            time_input_range_t6 = st.text_input("📅 Tùy chọn 1: Khoảng tháng (Ví dụ: 05/2026 - 07/2026):", placeholder="MM/YYYY - MM/YYYY", key="range_t6")
+            time_input_t6 = st.text_input("📅 Tùy chọn 2: Một Năm (YYYY) hoặc Một Tháng cụ thể (MM/YYYY):", placeholder="Ví dụ: 03/2026", value=str(datetime.now().year), key="single_t6")
+            submit_t6 = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN (LOẠI TRỪ CÁ NHÂN)", use_container_width=True)
+        
+        if submit_t6:
+            actual_t6 = time_input_range_t6.strip() if time_input_range_t6.strip() else time_input_t6.strip()
+            is_valid_t6 = validate_month_year_or_year(actual_t6)
+            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+            if not is_valid_t6:
+                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
+            elif f_source is None:
+                st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích!")
+            else:
+                with st.spinner(f"Đang tổng hợp lợi nhuận (loại trừ Cá nhân) cho kỳ {actual_t6}..."):
+                    df_t6_raw, excluded_set = get_profit_report_data_exclude_ca_nhan(f_source, actual_t6, df_source)
+                
+                st.snow()
+                st.success(f"🔥 HOÀN TẤT! Lợi nhuận kỳ {actual_t6} đã loại trừ {len(excluded_set)} trạm Cá nhân!")
+                
+                # Hiển thị danh sách trạm đã loại trừ
+                if excluded_set:
+                    with st.expander(f"📋 Danh sách {len(excluded_set)} trạm Cá nhân đã loại trừ"):
+                        st.write(", ".join(sorted([m.upper() for m in excluded_set])))
+                
+                # Biểu đồ
+                import altair as alt
+                st.markdown(f'<h3 style="color:#1565c0; font-weight:bold;">📊 Biểu đồ Lợi Nhuận Kỳ {actual_t6} (Đã loại trừ Cá nhân)</h3>', unsafe_allow_html=True)
+                
+                chart_data_t6 = df_t6_raw.rename(columns={
+                    "Tổng Doanh Thu": "Tổng Doanh Thu",
+                    "Tiền Chủ Nhà": "Tổng Tiền Trả Chủ Nhà",
+                    "Lợi nhuận": "Lợi Nhuận Công Ty"
+                }).set_index("Tháng")[["Tổng Doanh Thu", "Tổng Tiền Trả Chủ Nhà", "Lợi Nhuận Công Ty"]]
+                
+                df_melted_t6 = chart_data_t6.reset_index().melt(
+                    id_vars=['Tháng'],
+                    value_vars=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty'],
+                    var_name='Chỉ Tiêu',
+                    value_name='Số Tiền (VNĐ)'
+                )
+                
+                chart_t6 = alt.Chart(df_melted_t6).mark_bar(size=18).encode(
+                    x=alt.X('Chỉ Tiêu:N', axis=alt.Axis(title=None, labels=False, ticks=False)),
+                    y=alt.Y('Số Tiền (VNĐ):Q', title='Giá Trị (VNĐ)'),
+                    color=alt.Color('Chỉ Tiêu:N', scale=alt.Scale(
+                        domain=['Tổng Doanh Thu', 'Tổng Tiền Trả Chủ Nhà', 'Lợi Nhuận Công Ty'],
+                        range=['#1565c0', '#6a1b9a', '#2e7d32']
+                    ), legend=alt.Legend(orient='top', title=None)),
+                    column=alt.Column('Tháng:N', header=alt.Header(title=None, labelOrient='bottom', labelAlign='center'))
+                ).properties(width=75).configure_view(stroke='transparent')
+                
+                st.altair_chart(chart_t6, use_container_width=False)
+                
+                # Bảng
+                st.markdown(f'<h3 style="color:#1565c0; font-weight:bold;">📑 Bảng Tổng Hợp Dòng Tiền Kỳ {actual_t6} (Đã loại trừ Cá nhân)</h3>', unsafe_allow_html=True)
+                df_t6_display = df_t6_raw.copy()
+                
+                # Hàng tổng cộng
+                sum_row_t6 = {
+                    "Tháng": "TỔNG CỘNG",
+                    "Doanh thu Viettel": df_t6_display["Doanh thu Viettel"].sum(),
+                    "Doanh thu Vina":    df_t6_display["Doanh thu Vina"].sum(),
+                    "Doanh thu Mobi":    df_t6_display["Doanh thu Mobi"].sum(),
+                    "Tổng Doanh Thu":    df_t6_display["Tổng Doanh Thu"].sum(),
+                    "Tiền Chủ Nhà":      df_t6_display["Tiền Chủ Nhà"].sum(),
+                    "Lợi nhuận":         df_t6_display["Lợi nhuận"].sum()
+                }
+                df_t6_display = pd.concat([pd.DataFrame([sum_row_t6]), df_t6_display], ignore_index=True)
+                
+                for col in ["Doanh thu Viettel", "Doanh thu Vina", "Doanh thu Mobi", "Tổng Doanh Thu", "Tiền Chủ Nhà", "Lợi nhuận"]:
+                    df_t6_display[col] = df_t6_display[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x != 0 else "-")
+                
+                n_data_t6 = len(df_t6_display) - 1
+                df_t6_display.insert(0, 'STT', ["-"] + list(range(1, n_data_t6 + 1)))
+                
+                df_t6_display.rename(columns={
+                    "Tháng": "Tháng mm/yyyy",
+                    "Doanh thu Viettel": "Doanh thu Viettel theo tháng",
+                    "Doanh thu Vina":    "Doanh thu Vina theo tháng",
+                    "Doanh thu Mobi":    "Doanh thu Mobi theo tháng",
+                    "Tổng Doanh Thu":    "Sum doanh thu Viettel+Vina+Mobi theo tháng",
+                    "Tiền Chủ Nhà":      "Tổng tiền phải trả chủ nhà theo tháng",
+                    "Lợi nhuận":         "Lợi nhuận sau thuế của Công ty"
+                }, inplace=True)
+                
+                st.markdown("""
+                <style>
+                .blue-header-tab6 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                .blue-header-tab6 th { background-color: #e3f2fd !important; color: #1565c0 !important; font-weight: 900 !important; border: 1px solid #bbdefb; padding: 10px; text-align: left; font-size: 15px; }
+                .blue-header-tab6 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+                .blue-header-tab6 tr:nth-child(even) { background-color: #f9f9f9; }
+                .blue-header-tab6 tr:hover { background-color: #e8f5e9; }
+                .blue-header-tab6 tbody tr:first-child td { color: #2e7d32 !important; font-weight: 900 !important; font-size: 1.5em !important; background-color: #e8f5e9 !important; }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                html_t6 = df_t6_display.to_html(index=False, classes="blue-header-tab6", escape=False)
+                st.markdown(html_t6, unsafe_allow_html=True)
+                
+                out_t6 = io.BytesIO()
+                with pd.ExcelWriter(out_t6, engine='openpyxl') as writer:
+                    safe_t6 = actual_t6.replace('/', '_').replace(' ', '')
+                    df_t6_display.to_excel(writer, index=False, sheet_name=f'LoaiTruCaNhan_{safe_t6}')
+                
+                st.download_button(
+                    label=f"🔽 TẢI XUỐNG BÁO CÁO (LOẠI TRỪ CÁ NHÂN) KỲ {actual_t6} (EXCEL)",
+                    data=out_t6.getvalue(),
+                    file_name=f"Bao_Cao_LoaiTru_CaNhan_{safe_t6}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
 
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
