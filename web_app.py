@@ -246,6 +246,8 @@ def load_revenue_data_v2(file_source, target_month_str):
             target_month = datetime.now().month
             target_year = datetime.now().year
             
+        if hasattr(file_source, 'seek'):
+            file_source.seek(0)
         xl = pd.ExcelFile(file_source)
         sheets = xl.sheet_names
         
@@ -401,6 +403,8 @@ def get_profit_report_data(file_source, time_input_str, df_source):
         target_sheet = next((s for s in sheets if provider_keyword.lower() in s.lower()), None)
         if not target_sheet: return monthly_sums
         
+        if hasattr(file_source, 'seek'):
+            file_source.seek(0)
         df = pd.read_excel(file_source, sheet_name=target_sheet)
         if df.empty: return monthly_sums
         
@@ -482,6 +486,8 @@ def get_profit_report_data(file_source, time_input_str, df_source):
 @st.cache_data(ttl=60) # Tự động xóa bộ nhớ đệm sau 60 giây để cập nhật dữ liệu mới từ GitHub
 def load_data_and_enrich_v3(file_source, target_month_str):
     try:
+        if hasattr(file_source, 'seek'):
+            file_source.seek(0)
         xl = pd.ExcelFile(file_source)
         
         # 1. ĐỌC SHEET 1: Chi Tiết HD
@@ -667,7 +673,8 @@ if not df_source.empty:
                 display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
             else:
                 # Nhồi lại Data Engine đặc biệt theo Option Tháng vừa nhập!
-                df_pay_source = load_data_and_enrich_v3(DEFAULT_FILE, month_input_tab2) if DEFAULT_FILE else df_source
+                f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+                df_pay_source = load_data_and_enrich_v3(f_source, month_input_tab2)
                 df_pay_display = df_pay_source[df_pay_source["__is_due_this_month__"] == True].copy()
                 
                 # Lọc theo trạm cụ thể nếu người dùng có gõ
