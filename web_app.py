@@ -607,7 +607,11 @@ if not df_source.empty:
             
             search_tab2 = st.text_input("🔍 Tra cứu cụ thể một (hoặc nhiều) mã trạm trong DS của tháng (Để trống là Tính Tổng Tất Cả):", placeholder="Ví dụ: HCM001, HCM002...")
             
-            date_limit_tab2 = st.text_input("⏳ Lọc CỤM Trạm Cần TT Ghi sổ Tính Tới Mốc Ngày (Bỏ qua nếu muốn xem Cả Tháng):", placeholder="Gõ cực chuẩn định dạng MM/DD/YYYY. Ví dụ: 03/15/2026")
+            c1, c2 = st.columns(2)
+            with c1:
+                date_start_tab2 = st.text_input("⏳ Từ ngày (Để trống lấy từ đầu tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/01/2026")
+            with c2:
+                date_end_tab2 = st.text_input("⏳ Đến ngày (Để trống lấy đến cuối tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/25/2026")
             
             submit_payment_filter = st.form_submit_button(label="🔍 TRA CỨU DANH SÁCH", use_container_width=True)
             
@@ -623,15 +627,24 @@ if not df_source.empty:
                     mask2 = df_pay_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations_2)
                     df_pay_display = df_pay_display[mask2]
                     
-            # Lọc đếm ngược Tới Mốc Ngày (Phục vụ Chốt Quỹ Giải Ngân Kế Toán)
-            if date_limit_tab2.strip():
+            # Lọc đếm ngược Tới Mốc Khoảng Ngày (Phục vụ Chốt Quỹ Giải Ngân Kế Toán)
+            if date_start_tab2.strip() or date_end_tab2.strip():
                 try:
-                    limit_dt = pd.to_datetime(date_limit_tab2.strip(), format='%m/%d/%Y')
                     temp_dt = pd.to_datetime(df_pay_display['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
-                    mask_date = (temp_dt <= limit_dt) & (temp_dt.notna())
+                    mask_date = pd.Series([True] * len(df_pay_display), index=df_pay_display.index)
+                    
+                    if date_start_tab2.strip():
+                        start_dt = pd.to_datetime(date_start_tab2.strip(), format='%m/%d/%Y')
+                        mask_date &= (temp_dt >= start_dt)
+                        
+                    if date_end_tab2.strip():
+                        end_dt = pd.to_datetime(date_end_tab2.strip(), format='%m/%d/%Y')
+                        mask_date &= (temp_dt <= end_dt)
+                        
+                    mask_date &= temp_dt.notna()
                     df_pay_display = df_pay_display[mask_date]
                 except Exception:
-                    st.warning("⚠️ Lỗi định dạng ngày chốt sổ! Bạn phải gõ dấy sẹc '/' theo mẫu chuẩn tháng MM/DD/YYYY (Ví dụ: 03/15/2026)")
+                    st.warning("⚠️ Lỗi định dạng ngày chốt sổ! Bạn phải gõ dấu '/' theo mẫu chuẩn tháng MM/DD/YYYY (Ví dụ: 03/15/2026)")
             
             if df_pay_display.empty:
                 st.warning(f"❌ Rất tiếc, Không tìm thấy Trạm nào cần giải ngân thỏa mãn các lớp điều kiện trong tháng {month_input_tab2}.")
@@ -646,8 +659,10 @@ if not df_source.empty:
                 total_amount = df_pay_display["__raw_amount__"].sum()
                 
                 st.snow()
-                if date_limit_tab2.strip():
-                    st.success(f"🔥 **BÁO CÁO GIẢI NGÂN GẤP (CHỈ TÍNH CÁC HĐ ĐẾN CHỐT NGÀY {date_limit_tab2.strip()} CỦA THÁNG {month_input_tab2}):**")
+                if date_start_tab2.strip() or date_end_tab2.strip():
+                    msg_start = date_start_tab2.strip() if date_start_tab2.strip() else "Đầu tháng"
+                    msg_end = date_end_tab2.strip() if date_end_tab2.strip() else "Cuối tháng"
+                    st.success(f"🔥 **BÁO CÁO GIẢI NGÂN GẤP (CHỈ TÍNH CÁC HĐ TỪ {msg_start} ĐẾN {msg_end} CỦA THÁNG {month_input_tab2}):**")
                 else:
                     st.success(f"🔥 **TỔNG KẾT BÁO CÁO NHANH LŨY KẾ CẢ THÁNG NAY ({month_input_tab2}):**")
                     
@@ -884,7 +899,13 @@ if not df_source.empty:
         with st.form(key='subject_form'):
             st.info("💡 Tra cứu theo định dạng Tháng/Năm (MM/YYYY) để kết xuất Cú pháp Content cho Ngân hàng.")
             month_input_tab5 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=datetime.now().strftime('%m/%Y'))
-            date_limit_tab5 = st.text_input("⏳ Lọc HĐ Cần Thanh Toán Tới Mốc Ngày Biên (Để trống xem Cả Tháng):", placeholder="Gõ chuẩn định dạng Tháng/Ngày/Năm (MM/DD/YYYY). Ví dụ: 03/15/2026")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                date_start_tab5 = st.text_input("⏳ Từ ngày (Để trống lấy từ đầu tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/01/2026")
+            with c2:
+                date_end_tab5 = st.text_input("⏳ Đến ngày (Để trống lấy đến cuối tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/25/2026")
+                
             submit_subject = st.form_submit_button(label="🔍 TẠO DANH SÁCH COPY (NGÂN HÀNG)", use_container_width=True)
             
         if submit_subject:
@@ -896,12 +917,21 @@ if not df_source.empty:
                     df_pay_source_5 = load_data_and_enrich_v3(f_source, month_input_tab5)
                     df_pay_display_5 = df_pay_source_5[df_pay_source_5["__is_due_this_month__"] == True].copy()
                 
-                # Bộ lọc ngày Tối đa
-                if date_limit_tab5.strip():
+                # Bộ lọc Khoảng thời gian
+                if date_start_tab5.strip() or date_end_tab5.strip():
                     try:
-                        limit_dt = pd.to_datetime(date_limit_tab5.strip(), format='%m/%d/%Y')
                         temp_dt = pd.to_datetime(df_pay_display_5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
-                        mask_date = (temp_dt <= limit_dt) & (temp_dt.notna())
+                        mask_date = pd.Series([True] * len(df_pay_display_5), index=df_pay_display_5.index)
+                        
+                        if date_start_tab5.strip():
+                            start_dt = pd.to_datetime(date_start_tab5.strip(), format='%m/%d/%Y')
+                            mask_date &= (temp_dt >= start_dt)
+                            
+                        if date_end_tab5.strip():
+                            end_dt = pd.to_datetime(date_end_tab5.strip(), format='%m/%d/%Y')
+                            mask_date &= (temp_dt <= end_dt)
+                            
+                        mask_date &= temp_dt.notna()
                         df_pay_display_5 = df_pay_display_5[mask_date]
                     except Exception:
                         st.warning("⚠️ Lỗi định dạng mốc ngày! Bạn phải gõ dấu '/' theo chuẩn tháng trước ngày sau MM/DD/YYYY.")
@@ -919,8 +949,10 @@ if not df_source.empty:
                     total_amount_5 = df_pay_display_5["__raw_amount__"].sum()
                     
                     st.snow()
-                    if date_limit_tab5.strip():
-                        st.success(f"🔥 Khởi tạo Cú Pháp thành công cho **{total_stations_5}** hợp đồng tới chốt ngày {date_limit_tab5.strip()}!")
+                    if date_start_tab5.strip() or date_end_tab5.strip():
+                        msg_start = date_start_tab5.strip() if date_start_tab5.strip() else "Đầu tháng"
+                        msg_end = date_end_tab5.strip() if date_end_tab5.strip() else "Cuối tháng"
+                        st.success(f"🔥 Khởi tạo Cú Pháp thành công cho **{total_stations_5}** hợp đồng (Từ {msg_start} đến {msg_end})!")
                     else:
                         st.success(f"🔥 Đã khởi tạo Cú Pháp Chuyển Khoản thành công cho toàn bộ **{total_stations_5}** hợp đồng Chủ Nhà của Cả tháng!")
                         
