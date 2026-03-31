@@ -50,6 +50,19 @@ def validate_month_year(val):
 def validate_month_year_or_year(val):
     val = str(val).strip()
     if not val: return False
+    
+    if '-' in val:
+        parts = val.split('-')
+        if len(parts) == 2:
+            try:
+                sm, sy = [int(p) for p in parts[0].strip().split('/')]
+                em, ey = [int(p) for p in parts[1].strip().split('/')]
+                if 1 <= sm <= 12 and 1 <= em <= 12 and sy > 0 and ey == sy and sm <= em:
+                    return True
+            except:
+                pass
+        return False
+
     try:
         parts = val.split('/')
         if len(parts) == 1:
@@ -366,21 +379,29 @@ def load_revenue_data_v2(file_source, target_month_str):
 # --- HÀM TỔNG HỢP LỢI NHUẬN (TAB 4) ---
 def get_profit_report_data(file_source, time_input_str, df_source):
     time_input_str = str(time_input_str).strip()
-    parts = time_input_str.split('/')
-    if len(parts) == 2:
-        try:
-            months = [f"{int(parts[0]):02d}"]
-            target_year = int(parts[1])
-        except:
-            months = [f"{datetime.now().month:02d}"]
-            target_year = datetime.now().year
+    
+    if '-' in time_input_str:
+        p1, p2 = time_input_str.split('-')
+        sm, sy = [int(x) for x in p1.strip().split('/')]
+        em, ey = [int(x) for x in p2.strip().split('/')]
+        target_year = sy
+        months = [f"{m:02d}" for m in range(sm, em + 1)]
     else:
-        try:
-            target_year = int(time_input_str)
-            months = [f"{m:02d}" for m in range(1, 13)]
-        except:
-            target_year = datetime.now().year
-            months = [f"{m:02d}" for m in range(1, 13)]
+        parts = time_input_str.split('/')
+        if len(parts) == 2:
+            try:
+                months = [f"{int(parts[0]):02d}"]
+                target_year = int(parts[1])
+            except:
+                months = [f"{datetime.now().month:02d}"]
+                target_year = datetime.now().year
+        else:
+            try:
+                target_year = int(time_input_str)
+                months = [f"{m:02d}" for m in range(1, 13)]
+            except:
+                target_year = datetime.now().year
+                months = [f"{m:02d}" for m in range(1, 13)]
     
     # 1. TỔNG TIỀN CHỦ NHÀ
     chu_nha_totals = []
@@ -877,27 +898,29 @@ if not df_source.empty:
     with tab4:
         st.markdown(f"### 📈 Báo Cáo KQKD Công Ty (Doanh Thu vs Chi Phí)")
         with st.form(key='profit_yearly_form'):
-            st.info("💡 Bạn có thể tra theo YYYY (Ví dụ: 2026) để xem 12 tháng, HOẶC tra theo MM/YYYY (Ví dụ: 03/2026) để xem 1 tháng cụ thể!")
-            time_input_tab4 = st.text_input("📅 Nhập định dạng Năm (YYYY) hoặc Tháng/Năm (MM/YYYY):", value=str(datetime.now().year))
+            st.info("💡 Điền vào chữ Tùy chọn 1 HOẶC Tùy chọn 2 bên dưới rồi nhấn nút.")
+            time_input_range = st.text_input("📅 Tùy chọn 1: Khoảng tháng (Ví dụ: 05/2026 - 07/2026):", placeholder="MM/YYYY - MM/YYYY")
+            time_input_tab4 = st.text_input("📅 Tùy chọn 2: Một Năm (YYYY) hoặc Một Tháng cụ thể (MM/YYYY):", placeholder="Ví dụ: 03/2026", value=str(datetime.now().year))
             submit_profit = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN TÀI CHÍNH", use_container_width=True)
             
         if submit_profit:
-            is_valid_t4 = validate_month_year_or_year(time_input_tab4)
+            actual_time_str = time_input_range.strip() if time_input_range.strip() else time_input_tab4.strip()
+            is_valid_t4 = validate_month_year_or_year(actual_time_str)
             f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
             if not is_valid_t4:
                 display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
             elif f_source is None:
                 st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
             else:
-                with st.spinner(f"Hệ thống đang xào nấu luồng Doanh thu & Chi phí cho mốc thời gian {time_input_tab4}... (Vui lòng chờ vài giây)"):
-                    df_report_raw = get_profit_report_data(f_source, time_input_tab4, df_source)
+                with st.spinner(f"Hệ thống đang xào nấu luồng Doanh thu & Chi phí cho mốc thời gian {actual_time_str}... (Vui lòng chờ vài giây)"):
+                    df_report_raw = get_profit_report_data(f_source, actual_time_str, df_source)
                 
                 st.snow()
-                st.success(f"🔥 CẬP NHẬT HOÀN TẤT LỢI NHUẬN TÀI CHÍNH CHO KỲ: {time_input_tab4}!")
+                st.success(f"🔥 CẬP NHẬT HOÀN TẤT LỢI NHUẬN TÀI CHÍNH CHO KỲ: {actual_time_str}!")
                 
                 # Biểu đồ Cột Song Song thay vì Chồng lên nhau (Dùng Altair có sẵn của Streamlit)
                 import altair as alt
-                st.markdown(f'<h3 style="color:red; font-weight:bold;">📊 Biểu đồ Lợi Nhuận Kỳ {time_input_tab4}</h3>', unsafe_allow_html=True)
+                st.markdown(f'<h3 style="color:red; font-weight:bold;">📊 Biểu đồ Lợi Nhuận Kỳ {actual_time_str}</h3>', unsafe_allow_html=True)
                 chart_data = df_report_raw.rename(columns={
                     "Tổng Doanh Thu": "Tổng Doanh Thu",
                     "Tiền Chủ Nhà": "Tổng Tiền Trả Chủ Nhà",
@@ -930,12 +953,27 @@ if not df_source.empty:
                 st.altair_chart(chart, use_container_width=False)
                 
                 # Bảng chi tiết
-                st.markdown(f'<h3 style="color:red; font-weight:bold;">📑 Bảng Tổng Hợp Dòng Tiền Kỳ {time_input_tab4}</h3>', unsafe_allow_html=True)
+                st.markdown(f'<h3 style="color:red; font-weight:bold;">📑 Bảng Tổng Hợp Dòng Tiền Kỳ {actual_time_str}</h3>', unsafe_allow_html=True)
                 df_report_display = df_report_raw.copy()
+                
+                # SUM TỔNG CỘNG
+                sum_row_data = {
+                    "Tháng": "TỔNG CỘNG",
+                    "Doanh thu Viettel": getattr(df_report_display["Doanh thu Viettel"], "sum")() if "Doanh thu Viettel" in df_report_display.columns else 0,
+                    "Doanh thu Vina": getattr(df_report_display["Doanh thu Vina"], "sum")() if "Doanh thu Vina" in df_report_display.columns else 0,
+                    "Doanh thu Mobi": getattr(df_report_display["Doanh thu Mobi"], "sum")() if "Doanh thu Mobi" in df_report_display.columns else 0,
+                    "Tổng Doanh Thu": getattr(df_report_display["Tổng Doanh Thu"], "sum")() if "Tổng Doanh Thu" in df_report_display.columns else 0,
+                    "Tiền Chủ Nhà": getattr(df_report_display["Tiền Chủ Nhà"], "sum")() if "Tiền Chủ Nhà" in df_report_display.columns else 0,
+                    "Lợi nhuận": getattr(df_report_display["Lợi nhuận"], "sum")() if "Lợi nhuận" in df_report_display.columns else 0
+                }
+                sum_df = pd.DataFrame([sum_row_data])
+                df_report_display = pd.concat([sum_df, df_report_display], ignore_index=True)
+                
                 for col in ["Doanh thu Viettel", "Doanh thu Vina", "Doanh thu Mobi", "Tổng Doanh Thu", "Tiền Chủ Nhà", "Lợi nhuận"]:
-                    df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.0f}" if x != 0 else "-")
+                    df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x != 0 else "-")
                     
                 df_report_display.insert(0, 'STT', range(1, len(df_report_display) + 1))
+                df_report_display.loc[0, 'STT'] = "-" # Remove STT for total row
                 
                 df_report_display.rename(columns={
                     "Tháng": "Tháng mm/yyyy",
@@ -964,12 +1002,12 @@ if not df_source.empty:
                 out_prf = io.BytesIO()
                 with pd.ExcelWriter(out_prf, engine='openpyxl') as writer:
                     # Chống lỗi sập do dấu gạch chéo không được dùng làm tên Sheet Excel
-                    safe_sheet_name = str(time_input_tab4).replace('/', '_')
+                    safe_sheet_name = str(actual_time_str).replace('/', '_').replace(' ', '')
                     df_report_display.to_excel(writer, index=False, sheet_name=f'Loi_Nhuan_{safe_sheet_name}')
                     
                 safe_file_name = f"Bao_Cao_Loi_Nhuan_{safe_sheet_name}.xlsx"
                 st.download_button(
-                    label=f"🔽 TẢI XUỐNG BÁO CÁO LỢI NHUẬN KỲ {time_input_tab4} (EXCEL)",
+                    label=f"🔽 TẢI XUỐNG BÁO CÁO LỢI NHUẬN KỲ {actual_time_str} (EXCEL)",
                     data=out_prf.getvalue(),
                     file_name=safe_file_name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
