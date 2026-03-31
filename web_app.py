@@ -978,8 +978,8 @@ if not df_source.empty:
                 for col in ["Doanh thu Viettel", "Doanh thu Vina", "Doanh thu Mobi", "Tổng Doanh Thu", "Tiền Chủ Nhà", "Lợi nhuận"]:
                     df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x != 0 else "-")
                     
-                df_report_display.insert(0, 'STT', range(1, len(df_report_display) + 1))
-                df_report_display.loc[0, 'STT'] = "-" # Remove STT for total row
+                n_data = len(df_report_display) - 1  # exclude tổng cộng row
+                df_report_display.insert(0, 'STT', ["-"] + list(range(1, n_data + 1)))
                 
                 df_report_display.rename(columns={
                     "Tháng": "Tháng mm/yyyy",
