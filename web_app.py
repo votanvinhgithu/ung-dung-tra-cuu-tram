@@ -817,13 +817,14 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
         "💵 DS TRẠM TT CHỦ NHÀ",
         "💰 DOANH THU CÁC NHÀ MẠNG",
         "📈 BÁO CÁO LỢI NHUẬN CÔNG TY",
         "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH",
-        "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN"
+        "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
+        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM"
     ])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
@@ -1513,6 +1514,212 @@ if not df_source.empty:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
+
+    # ------------ TAB 7: BẢN ĐỒ VỊ TRÍ CÁC TRẠM ------------
+    with tab7:
+        st.markdown("### 🗺️ Bản Đồ Vị Trí Tất Cả Các Trạm")
+        st.info("📍 Bản đồ hiển thị toàn bộ các trạm theo tọa độ Longitude / Latitude. Nhấn vào icon đỏ để xem thông tin chi tiết từng trạm.")
+
+        try:
+            import folium
+            from streamlit_folium import st_folium
+            folium_available = True
+        except ImportError:
+            folium_available = False
+
+        if not folium_available:
+            st.error("⚠️ Cần cài thêm thư viện bản đồ. Vui lòng chạy lệnh sau rồi khởi động lại app:")
+            st.code("pip install folium streamlit-folium", language="bash")
+        else:
+            # --- CHUẨN BỊ DỮ LIỆU ---
+            df_map = df_source.copy()
+
+            # Tìm cột long/lat theo tên linh hoạt
+            long_col = None
+            lat_col = None
+            for c in df_map.columns:
+                c_low = str(c).strip().lower()
+                if "long" in c_low and long_col is None:
+                    long_col = c
+                if "lat" in c_low and lat_col is None:
+                    lat_col = c
+
+            if long_col is None or lat_col is None:
+                st.warning("⚠️ Không tìm thấy cột tọa độ (long/lat) trong dữ liệu. Kiểm tra lại tên cột trong file Excel.")
+            else:
+                # Chuyển đổi sang số và lọc bỏ hàng không có tọa độ
+                df_map[long_col] = pd.to_numeric(df_map[long_col], errors='coerce')
+                df_map[lat_col]  = pd.to_numeric(df_map[lat_col], errors='coerce')
+                df_map_valid = df_map.dropna(subset=[long_col, lat_col]).copy()
+                df_map_valid = df_map_valid[
+                    (df_map_valid[lat_col].between(-90, 90)) &
+                    (df_map_valid[long_col].between(-180, 180))
+                ]
+
+                total_on_map = len(df_map_valid)
+                st.success(f"✅ Đã tải **{total_on_map}** trạm có tọa độ hợp lệ lên bản đồ.")
+
+                # --- Ô SEARCH MÃ TRẠM ---
+                col_search, col_btn = st.columns([3, 1])
+                with col_search:
+                    search_ma_tram_map = st.text_input(
+                        "🔍 Tìm kiếm mã trạm trên bản đồ:",
+                        placeholder="Nhập mã trạm rồi nhấn Tìm kiếm...",
+                        key="map_search_input"
+                    )
+                with col_btn:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    do_search_map = st.button("🗺️ Tìm trên bản đồ", use_container_width=True, key="map_search_btn")
+
+                # --- XÁC ĐỊNH TÂM BẢN ĐỒ ---
+                center_lat = df_map_valid[lat_col].mean()
+                center_lon = df_map_valid[long_col].mean()
+                zoom_start = 7
+                found_station = None
+
+                if search_ma_tram_map.strip():
+                    search_key = search_ma_tram_map.strip().lower()
+                    match_rows = df_map_valid[
+                        df_map_valid["mã trạm"].astype(str).str.strip().str.lower() == search_key
+                    ]
+                    if not match_rows.empty:
+                        found_station = match_rows.iloc[0]
+                        center_lat = float(found_station[lat_col])
+                        center_lon = float(found_station[long_col])
+                        zoom_start = 15
+                        st.success(f"🎯 Đã tìm thấy trạm **{found_station['mã trạm']}** — Zoom đến tọa độ ({center_lat:.6f}, {center_lon:.6f})")
+                    else:
+                        st.warning(f"❌ Không tìm thấy mã trạm **'{search_ma_tram_map.strip()}'** trong dữ liệu.")
+
+                # --- TẠO BẢN ĐỒ FOLIUM ---
+                m = folium.Map(
+                    location=[center_lat, center_lon],
+                    zoom_start=zoom_start,
+                    tiles="OpenStreetMap"
+                )
+
+                # Thêm lớp bản đồ vệ tinh (Esri Satellite) như Google Maps
+                folium.TileLayer(
+                    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                    attr="Esri",
+                    name="🛰️ Vệ Tinh (Esri)",
+                    overlay=False,
+                    control=True
+                ).add_to(m)
+
+                folium.TileLayer(
+                    tiles="OpenStreetMap",
+                    name="🗺️ Bản Đồ Đường (OSM)",
+                    overlay=False,
+                    control=True
+                ).add_to(m)
+
+                folium.LayerControl(position="topright").add_to(m)
+
+                # --- VẼ CÁC MARKER ---
+                display_cols_for_popup = [
+                    c for c in DISPLAY_COLUMNS
+                    if c in df_map_valid.columns and c not in ["__raw_amount__", "__is_due_this_month__"]
+                ]
+
+                for _, row_m in df_map_valid.iterrows():
+                    ma_tram_val = str(row_m.get("mã trạm", "")).strip()
+                    lat_val = float(row_m[lat_col])
+                    lon_val = float(row_m[long_col])
+
+                    # Tạo popup HTML kiểu thẻ dọc (giống Tab 1)
+                    popup_rows_html = ""
+                    for col_p in display_cols_for_popup:
+                        val_p = row_m.get(col_p, "-")
+                        if pd.isna(val_p) or str(val_p).strip() == "": val_p = "-"
+                        color_style = "color:#1565c0;" if col_p in EXTRA_PAY_COLS else "color:#333;"
+                        popup_rows_html += (
+                            f"<tr>"
+                            f"<td style='font-weight:bold;white-space:nowrap;padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;{color_style}'>{col_p}</td>"
+                            f"<td style='padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;'>{val_p}</td>"
+                            f"</tr>"
+                        )
+
+                    popup_html = f"""
+                    <div style='min-width:320px;max-width:420px;max-height:450px;overflow-y:auto;font-family:Arial,sans-serif;'>
+                        <div style='background:#e53935;color:white;padding:8px 12px;border-radius:6px 6px 0 0;font-weight:bold;font-size:14px;'>
+                            📡 Trạm: {ma_tram_val}
+                        </div>
+                        <table style='width:100%;border-collapse:collapse;background:white;'>
+                            {popup_rows_html}
+                        </table>
+                    </div>
+                    """
+
+                    # Icon đỏ với label mã trạm
+                    icon = folium.DivIcon(
+                        html=f"""
+                        <div style='
+                            background:transparent;
+                            display:flex;
+                            flex-direction:column;
+                            align-items:center;
+                            transform:translate(-50%,-100%);
+                        '>
+                            <div style='
+                                background:#e53935;
+                                color:white;
+                                font-size:10px;
+                                font-weight:bold;
+                                padding:2px 5px;
+                                border-radius:4px;
+                                white-space:nowrap;
+                                box-shadow:0 1px 4px rgba(0,0,0,0.4);
+                                margin-bottom:2px;
+                            '>{ma_tram_val}</div>
+                            <svg width='16' height='20' viewBox='0 0 16 20' xmlns='http://www.w3.org/2000/svg'>
+                                <path d='M8 0C4.69 0 2 2.69 2 6c0 4.5 6 14 6 14s6-9.5 6-14c0-3.31-2.69-6-6-6z' fill='#e53935'/>
+                                <circle cx='8' cy='6' r='2.5' fill='white'/>
+                            </svg>
+                        </div>
+                        """,
+                        icon_size=(80, 40),
+                        icon_anchor=(40, 40)
+                    )
+
+                    # Nếu là trạm được search -> tô sáng bằng CircleMarker thêm
+                    if found_station is not None and ma_tram_val.lower() == search_ma_tram_map.strip().lower():
+                        folium.CircleMarker(
+                            location=[lat_val, lon_val],
+                            radius=22,
+                            color="#FFD700",
+                            fill=True,
+                            fill_color="#FFD700",
+                            fill_opacity=0.35,
+                            weight=3
+                        ).add_to(m)
+
+                    folium.Marker(
+                        location=[lat_val, lon_val],
+                        popup=folium.Popup(popup_html, max_width=440),
+                        tooltip=f"📡 {ma_tram_val}",
+                        icon=icon
+                    ).add_to(m)
+
+                # --- HIỂN THỊ BẢN ĐỒ ---
+                st.markdown("**💡 Ghi chú:** Nhấn vào icon đỏ để xem thông tin trạm. Dùng nút lớp bản đồ góc phải để chuyển chế độ vệ tinh.")
+                st_folium(m, use_container_width=True, height=650, returned_objects=[])
+
+                # --- BẢNG DANH SÁCH TRẠM TRÊN BẢN ĐỒ ---
+                with st.expander(f"📋 Xem danh sách {total_on_map} trạm có tọa độ trên bản đồ"):
+                    df_map_show = df_map_valid[["mã trạm", lat_col, long_col, "Địa chỉ", "Chủ nhà + SĐT"]].copy()
+                    df_map_show.columns = ["Mã Trạm", "Vĩ Độ (Lat)", "Kinh Độ (Long)", "Địa Chỉ", "Chủ Nhà"]
+                    df_map_show.insert(0, "STT", range(1, len(df_map_show) + 1))
+                    st.markdown("""
+                    <style>
+                    .map-table { width:100%;border-collapse:collapse;font-family:"Source Sans Pro",sans-serif; }
+                    .map-table th { background:#ffeaea!important;color:#ff0000!important;font-weight:900!important;border:1px solid #e0e0e0;padding:8px;font-size:14px; }
+                    .map-table td { border:1px solid #e0e0e0;padding:6px 8px;font-size:13px; }
+                    .map-table tr:nth-child(even) { background:#f9f9f9; }
+                    .map-table tr:hover { background:#f1f1f1; }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    st.markdown(df_map_show.to_html(index=False, classes="map-table", escape=False), unsafe_allow_html=True)
 
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
