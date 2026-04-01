@@ -1652,34 +1652,36 @@ if not df_source.empty:
                     """
 
                     # Icon đỏ với label mã trạm
+                    # Cấu trúc: [label badge ~20px] + [gap 2px] + [pin SVG 22px] = 44px tổng chiều cao
+                    # icon_anchor=(50, 44): điểm neo nằm đúng tại đáy nhọn của pin = tọa độ lat/lon
                     icon = folium.DivIcon(
                         html=f"""
                         <div style='
-                            background:transparent;
+                            width:100px;
                             display:flex;
                             flex-direction:column;
                             align-items:center;
-                            transform:translate(-50%,-100%);
                         '>
                             <div style='
                                 background:#e53935;
                                 color:white;
                                 font-size:10px;
                                 font-weight:bold;
-                                padding:2px 5px;
+                                padding:2px 6px;
                                 border-radius:4px;
                                 white-space:nowrap;
-                                box-shadow:0 1px 4px rgba(0,0,0,0.4);
+                                box-shadow:0 1px 4px rgba(0,0,0,0.45);
                                 margin-bottom:2px;
+                                line-height:16px;
                             '>{ma_tram_val}</div>
-                            <svg width='16' height='20' viewBox='0 0 16 20' xmlns='http://www.w3.org/2000/svg'>
-                                <path d='M8 0C4.69 0 2 2.69 2 6c0 4.5 6 14 6 14s6-9.5 6-14c0-3.31-2.69-6-6-6z' fill='#e53935'/>
-                                <circle cx='8' cy='6' r='2.5' fill='white'/>
+                            <svg width='18' height='24' viewBox='0 0 18 24' xmlns='http://www.w3.org/2000/svg'>
+                                <path d='M9 0C5.13 0 2 3.13 2 7c0 5.25 7 17 7 17s7-11.75 7-17c0-3.87-3.13-7-7-7z' fill='#e53935'/>
+                                <circle cx='9' cy='7' r='3' fill='white'/>
                             </svg>
                         </div>
                         """,
-                        icon_size=(80, 40),
-                        icon_anchor=(40, 40)
+                        icon_size=(100, 44),
+                        icon_anchor=(50, 44)
                     )
 
                     # Nếu là trạm được search -> tô sáng bằng CircleMarker thêm
