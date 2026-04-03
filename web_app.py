@@ -1827,35 +1827,91 @@ if not df_source.empty:
 
                 # --- HIỂN THỊ BẢN ĐỒ ---
                 st.markdown("**💡 Ghi chú:** Nhấn icon để xem chi tiết. Hover để xem nhanh nhà mạng. Nút góc phải để đổi lớp bản đồ.")
-                st_folium(m, use_container_width=True, height=650, returned_objects=[])
+                st_fo                        # Lọc theo mã trạm (hỗ trợ nhiều mã trạm cách nhau bằng dấu phẩy)
+                        if ma_tram_t8.strip():
+                            # Tách theo phẩy hoặc xuống dòng
+                            raw_keys = ma_tram_t8.replace(',', '\n').split('\n')
+                            search_keys_t8 = [s.strip().lower() for s in raw_keys if s.strip()]
+                            if search_keys_t8:
+                                mask_t8 = df_s6[ma_col_t8].astype(str).str.strip().str.lower().isin(search_keys_t8)
+                                df_s6_filtered = df_s6[mask_t8].copy()
+                            else:
+                                df_s6_filtered = df_s6.copy()
+                        else:
+                            df_s6_filtered = df_s6.copy()
 
-                # --- BẢNG DANH SÁCH TRẠM ---
-                with st.expander(f"📋 Xem danh sách {filtered_count} trạm đang hiển thị trên bản đồ"):
-                    cols_show = ["mã trạm", lat_col, long_col, "Địa chỉ", "Viettel", "Vina", "Mobi", "Chủ nhà + SĐT"]
-                    existing_show = [c for c in cols_show if c in df_map_filtered.columns]
-                    df_map_show = df_map_filtered[existing_show].copy()
-                    df_map_show.insert(1, "Số NM", df_map_filtered["__provider_count__"].values)
-                    df_map_show.insert(2, "Nhà Mạng", df_map_filtered["__providers__"].apply(
-                        lambda x: " | ".join(x) if x else "Không có"
-                    ).values)
-                    df_map_show.insert(0, "STT", range(1, len(df_map_show) + 1))
-                    st.markdown("""
-                    <style>
-                    .map-table { width:100%;border-collapse:collapse;font-family:"Source Sans Pro",sans-serif; }
-                    .map-table th { background:#ffeaea!important;color:#ff0000!important;font-weight:900!important;border:1px solid #e0e0e0;padding:8px;font-size:14px; }
-                    .map-table td { border:1px solid #e0e0e0;padding:6px 8px;font-size:13px; }
-                    .map-table tr:nth-child(even) { background:#f9f9f9; }
-                    .map-table tr:hover { background:#f1f1f1; }
-                    </style>
-                    """, unsafe_allow_html=True)
-                    st.markdown(df_map_show.to_html(index=False, classes="map-table", escape=False), unsafe_allow_html=True)
+                        if df_s6_filtered.empty:
+                            st.warning("❌ Không tìm thấy mã trạm nào khớp!")
+                        else:
+                            # --- TÍNH TỔNG CỘNG TRƯỚC KHI FORMAT ---
+                            summary_row = {ma_col_t8: "TỔNG CỘNG"}
+                            
+                            # Xác định các cột số để tính tổng
+                            for c in df_s6_filtered.columns:
+                                if c == ma_col_t8: continue
+                                # Thử convert sang float
+                                try:
+                                    # Tạo bản sao seri để tính toán
+                                    temp_s = pd.to_numeric(df_s6_filtered[c], errors='coerce')
+                                    if not temp_s.isna().all():
+                                        total_val = temp_s.sum()
+                                        summary_row[c] = total_val
+                                    else:
+                                        summary_row[c] = "-"
+                                except:
+                                    summary_row[c] = "-"
 
-    # ============================================================
-    # ------------ TAB 8: TRA CỨU THỜI GIAN HOÀN VỐN ------------
-    # ============================================================
-    with tab8:
-        st.markdown("### ⏱️ Tra Cứu Thông Tin Thời Gian Hoàn Vốn")
-        st.info("📋 Dữ liệu được lấy từ **Sheet 6_time hoàn vốn** (cột C đến cuối). Nhập mã trạm để tra cứu, hoặc để trống để xem toàn bộ.")
+                            # Format các cột số trong DataFrame chính
+                            for c in df_s6_filtered.columns:
+                                if c == ma_col_t8: continue
+                                try:
+                                    # Convert sang số nếu có thể
+                                    df_s6_filtered[c] = pd.to_numeric(df_s6_filtered[c], errors='coerce')
+                                    df_s6_filtered[c] = df_s6_filtered[c].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "-")
+                                except:
+                                    pass
+
+                            # Format các giá trị trong hàng tổng cộng
+                            formatted_summary = {}
+                            for k, v in summary_row.items():
+                                if isinstance(v, (int, float)):
+                                    formatted_summary[k] = f"{v:,.0f}"
+                                else:
+                                    formatted_summary[k] = v
+
+                            st.success(f"✅ Tìm thấy **{len(df_s6_filtered)}** trạm.")
+
+                            # --- BẢNG 1: LƯỚI NGANG ---
+                            st.markdown('<h3 style="color:red; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Ngang</h3>', unsafe_allow_html=True)
+                            
+                            # Thêm hàng tổng cộng vào bảng hiển thị
+                            df_t8_display = df_s6_filtered.copy()
+                            # Chèn STT
+                            df_t8_display.insert(0, 'STT', range(1, len(df_t8_display) + 1))
+                            
+                            # Tạo hàng tổng cộng cho bảng hiển thị (STT là "-")
+                            final_summary_row = {"STT": "-"}
+                            final_summary_row.update(formatted_summary)
+                            
+                            # Kết hợp
+                            df_final_t8 = pd.concat([df_t8_display, pd.DataFrame([final_summary_row])], ignore_index=True)
+
+                            # CSS cho bảng và hàng tổng cộng
+                            st.markdown("""
+                            <style>
+                            .hv-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                            .hv-table th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; white-space: nowrap; }
+                            .hv-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
+                            .hv-table tr:nth-child(even) { background-color: #f9f9f9; }
+                            .hv-table tr:hover { background-color: #fff3f3; }
+                            /* Style cho hàng cuối (Tổng cộng) */
+                            .hv-table tr:last-child { background-color: #e3f2fd !important; font-weight: bold; color: #0d47a1; }
+                            .hv-table tr:last-child td { color: #0d47a1 !important; font-size: 15px; }
+                            </style>
+                            """, unsafe_allow_html=True)
+                            
+                            html_t8 = df_final_t8.to_html(index=False, classes="hv-table", escape=False)
+                            st.markdown(html_t8, unsafe_allow_html=True)�ến cuối). Nhập mã trạm để tra cứu, hoặc để trống để xem toàn bộ.")
 
         with st.form(key='hoan_von_search_form'):
             ma_tram_t8 = st.text_input("🔍 Nhập mã trạm cần tìm (để trống = xem toàn bộ):", placeholder="Ví dụ: HCM001")
