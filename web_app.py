@@ -1906,8 +1906,11 @@ if not df_source.empty:
         if f_source:
             df_payback = load_payback_data(f_source)
             if not df_payback.empty:
-                # Ô textbox cho gõ 1 mã trạm hoặc nhiều mã trạm
-                search_query_t8 = st.text_area("🔍 Nhập mã trạm cần tra cứu (cách nhau bởi dấu phẩy hoặc xuống dòng):", height=100, key="query_t8")
+                # Bọc trong form để có nút Search
+                with st.form(key='payback_search_form'):
+                    st.markdown("🔍 **Phễu Tra Cứu Hoàn Vốn**")
+                    search_query_t8 = st.text_area("Dán mã trạm cần tìm (ngăn cách bởi dấu phẩy hoặc enter xuống dòng):", height=100, key="query_t8")
+                    submit_search_t8 = st.form_submit_button(label="🔍 TÌM KIẾM CHI TIẾT", use_container_width=True)
                 
                 # Tìm cột mã trạm linh hoạt
                 ma_tram_col_t8 = next((c for c in df_payback.columns if "mã trạm" in str(c).lower()), "Mã trạm")
@@ -1921,6 +1924,15 @@ if not df_source.empty:
                 if df_filtered_t8.empty:
                     st.warning("⚠️ Không tìm thấy dữ liệu cho mã trạm yêu cầu.")
                 else:
+                    # ÉP KIỂU SỐ ĐỂ SUM CHÍNH XÁC (Xử lý trường hợp Pandas hiểu nhầm là chuỗi)
+                    for col in df_filtered_t8.columns:
+                        if col != ma_tram_col_t8:
+                            # Nếu là chuỗi, xóa bỏ các ký tự gây lỗi convert
+                            if df_filtered_t8[col].dtype == object:
+                                df_filtered_t8[col] = df_filtered_t8[col].astype(str).str.replace(',', '').replace(' ', '').replace('VNĐ', '').replace('vnđ', '')
+                            # Ép về số, lỗi thì để NaN
+                            df_filtered_t8[col] = pd.to_numeric(df_filtered_t8[col], errors='coerce')
+
                     # Tính hàng tổng cộng
                     num_cols_t8 = df_filtered_t8.select_dtypes(include=['number']).columns.tolist()
                     sum_data_t8 = {}
@@ -1935,15 +1947,16 @@ if not df_source.empty:
                     df_sum_t8 = pd.DataFrame([sum_data_t8])
                     df_display_t8 = pd.concat([df_sum_t8, df_filtered_t8], ignore_index=True)
                     
-                    # Style cho bảng 1 (Lưới hàng ngang, hàng tổng màu xanh đậm)
+                    # Style cho bảng 1 (Header Đỏ Đậm, Hàng tổng màu Xanh Lá)
                     st.markdown("""
                     <style>
-                    .blue-header-tab8 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
-                    .blue-header-tab8 th { background-color: #eaf2ff !important; color: #004085 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; }
-                    .blue-header-tab8 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
-                    .blue-header-tab8 tr:nth-child(even) { background-color: #f9f9f9; }
-                    .blue-header-tab8 tr:hover { background-color: #f1f1f1; }
-                    .blue-header-tab8 tbody tr:first-child td { color: #004085 !important; font-weight: 900 !important; font-size: 14px !important; background-color: #eaf2ff !important; }
+                    .red-header-tab8 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                    .red-header-tab8 th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; }
+                    .red-header-tab8 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
+                    .red-header-tab8 tr:nth-child(even) { background-color: #f9f9f9; }
+                    .red-header-tab8 tr:hover { background-color: #f1f1f1; }
+                    /* Hàng tổng cộng màu xanh lá đặc trưng của Tab 6 */
+                    .red-header-tab8 tbody tr:first-child td { color: #28a745 !important; font-weight: 900 !important; font-size: 14px !important; background-color: #e8f5e9 !important; }
                     </style>
                     """, unsafe_allow_html=True)
                     
@@ -1952,12 +1965,12 @@ if not df_source.empty:
                     for col in num_cols_t8:
                         df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
                     
-                    st.markdown('<h4 style="color:#004085; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Hàng Ngang</h4>', unsafe_allow_html=True)
-                    st.markdown(df_table1_t8.to_html(index=False, classes="blue-header-tab8", escape=False), unsafe_allow_html=True)
+                    st.markdown('<h4 style="color:red; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Hàng Ngang</h4>', unsafe_allow_html=True)
+                    st.markdown(df_table1_t8.to_html(index=False, classes="red-header-tab8", escape=False), unsafe_allow_html=True)
                     
                     # Bảng 2: Cột dọc (Mobile)
                     st.markdown("---")
-                    st.markdown('<h4 style="color:#004085; font-weight:bold;">📱 Bảng 2: Chi Tiết Dạng Cột (Xem Điện Thoại)</h4>', unsafe_allow_html=True)
+                    st.markdown('<h4 style="color:red; font-weight:bold;">📱 Bảng 2: Chi Tiết Dạng Cột (Xem Điện Thoại)</h4>', unsafe_allow_html=True)
                     render_cards(df_filtered_t8, is_payment_tab=False, columns_to_show=df_filtered_t8.columns.tolist())
             else:
                 st.info("⚠️ Không tìm thấy sheet 'Sheet 6_time hoàn vốn' trong file dữ liệu.")
