@@ -817,14 +817,16 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
         "💵 DS TRẠM TT CHỦ NHÀ",
         "💰 DOANH THU CÁC NHÀ MẠNG",
         "📈 BÁO CÁO LỢI NHUẬN CÔNG TY",
         "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH",
         "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
-        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM"
+        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM",
+        "⏱️ TRA CỨU THỜI GIAN HOÀN VỐN",
+        "🧮 TÍNH THỜI GIAN HOÀN VỐN"
     ])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
@@ -1847,6 +1849,467 @@ if not df_source.empty:
                     </style>
                     """, unsafe_allow_html=True)
                     st.markdown(df_map_show.to_html(index=False, classes="map-table", escape=False), unsafe_allow_html=True)
+
+    # ============================================================
+    # ------------ TAB 8: TRA CỨU THỜI GIAN HOÀN VỐN ------------
+    # ============================================================
+    with tab8:
+        st.markdown("### ⏱️ Tra Cứu Thông Tin Thời Gian Hoàn Vốn")
+        st.info("📋 Dữ liệu được lấy từ **Sheet 6_time hoàn vốn** (cột C đến cuối). Nhập mã trạm để tra cứu, hoặc để trống để xem toàn bộ.")
+
+        with st.form(key='hoan_von_search_form'):
+            ma_tram_t8 = st.text_input("🔍 Nhập mã trạm cần tìm (để trống = xem toàn bộ):", placeholder="Ví dụ: HCM001")
+            submit_t8 = st.form_submit_button(label="🔍 TÌM KIẾM", use_container_width=True)
+
+        if submit_t8:
+            f_source_t8 = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+            if f_source_t8 is None:
+                st.warning("⚠️ Không tìm thấy File dữ liệu!")
+            else:
+                try:
+                    if hasattr(f_source_t8, 'seek'):
+                        f_source_t8.seek(0)
+                    xl_t8 = pd.ExcelFile(f_source_t8)
+                    sheet6_name = next((s for s in xl_t8.sheet_names if 'sheet 6' in s.lower() or 'hoàn vốn' in s.lower() or 'hoan von' in s.lower()), None)
+
+                    if not sheet6_name:
+                        st.error("⚠️ Không tìm thấy sheet 'Sheet 6_time hoàn vốn' trong file Excel!")
+                    else:
+                        if hasattr(f_source_t8, 'seek'):
+                            f_source_t8.seek(0)
+                        # Đọc sheet, dùng header mặc định
+                        df_s6_raw = pd.read_excel(f_source_t8, sheet_name=sheet6_name, header=0)
+
+                        # Lấy từ cột C (index 2) trở đi
+                        if len(df_s6_raw.columns) > 2:
+                            df_s6 = df_s6_raw.iloc[:, 2:].copy()
+                        else:
+                            df_s6 = df_s6_raw.copy()
+
+                        # Loại bỏ dòng rỗng (dựa trên cột đầu tiên của subset)
+                        first_col = df_s6.columns[0]
+                        df_s6 = df_s6[df_s6[first_col].notna()]
+                        df_s6 = df_s6[df_s6[first_col].astype(str).str.strip() != '']
+                        df_s6 = df_s6[~df_s6[first_col].astype(str).str.lower().isin(['nan', 'null', 'mã trạm', 'stt', 'mã'])]
+                        df_s6.reset_index(drop=True, inplace=True)
+
+                        # Format số cho dễ đọc
+                        for c in df_s6.columns:
+                            if pd.api.types.is_float_dtype(df_s6[c]):
+                                df_s6[c] = df_s6[c].apply(lambda x: f"{x:,.2f}" if pd.notna(x) else "-")
+                            elif pd.api.types.is_datetime64_any_dtype(df_s6[c]):
+                                df_s6[c] = df_s6[c].dt.strftime('%m/%d/%Y')
+
+                        df_s6 = df_s6.fillna("-")
+
+                        # Đổi tên cột đầu tiên thành "mã trạm" nếu chưa có
+                        col_names = list(df_s6.columns)
+                        ma_col_t8 = col_names[0]
+
+                        # Lọc theo mã trạm
+                        if ma_tram_t8.strip():
+                            search_keys_t8 = [s.strip().lower() for s in ma_tram_t8.replace(',', '\n').split('\n') if s.strip()]
+                            mask_t8 = df_s6[ma_col_t8].astype(str).str.strip().str.lower().isin(search_keys_t8)
+                            df_s6_filtered = df_s6[mask_t8]
+                        else:
+                            df_s6_filtered = df_s6
+
+                        if df_s6_filtered.empty:
+                            st.warning("❌ Không tìm thấy mã trạm nào khớp!")
+                        else:
+                            st.success(f"✅ Tìm thấy **{len(df_s6_filtered)}** trạm.")
+
+                            # --- BẢNG 1: LƯỚI NGANG ---
+                            st.markdown('<h3 style="color:red; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Ngang</h3>', unsafe_allow_html=True)
+                            st.markdown("""
+                            <style>
+                            .hv-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                            .hv-table th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; white-space: nowrap; }
+                            .hv-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
+                            .hv-table tr:nth-child(even) { background-color: #f9f9f9; }
+                            .hv-table tr:hover { background-color: #fff3f3; }
+                            </style>
+                            """, unsafe_allow_html=True)
+                            df_t8_show = df_s6_filtered.copy()
+                            df_t8_show.insert(0, 'STT', range(1, len(df_t8_show) + 1))
+                            html_t8 = df_t8_show.to_html(index=False, classes="hv-table", escape=False)
+                            st.markdown(html_t8, unsafe_allow_html=True)
+
+                            # --- BẢNG 2: DẠNG THẺ DỌC ---
+                            st.markdown("---")
+                            st.markdown("### 🏷️ Bảng 2: Chi Tiết Dạng Thẻ (Đọc Dọc Trên Điện Thoại)")
+                            if len(df_s6_filtered) > 50:
+                                st.warning("⚠️ Hiển thị thẻ cho 50 trạm đầu để tránh chậm máy.")
+                                df_cards_t8 = df_s6_filtered.head(50)
+                            else:
+                                df_cards_t8 = df_s6_filtered
+
+                            for _, row_t8 in df_cards_t8.iterrows():
+                                tram_id_t8 = str(row_t8.iloc[0]) if str(row_t8.iloc[0]) != "" else "Không Mẫu"
+                                with st.expander(f"⏱️ Hoàn Vốn Trạm: {tram_id_t8}", expanded=True):
+                                    for col_t8 in df_s6_filtered.columns:
+                                        val_t8 = row_t8[col_t8]
+                                        if pd.isna(val_t8) or str(val_t8).strip() in ("", "-", "nan"): val_t8 = "-"
+                                        st.markdown(f"**{col_t8}:** &nbsp;&nbsp; {val_t8}")
+
+                except Exception as e_t8:
+                    st.error(f"⚠️ Lỗi khi đọc sheet hoàn vốn: {e_t8}")
+
+    # ============================================================
+    # ------------ TAB 9: TÍNH THỜI GIAN HOÀN VỐN ---------------
+    # ============================================================
+    with tab9:
+        st.markdown("### 🧮 Tính Thời Gian Hoàn Vốn")
+        st.info("💡 Nhập mã trạm để tự động điền dữ liệu có sẵn. Sau đó nhập các thông số còn lại để tính số tháng hoàn vốn.")
+
+        # ---- Helper Functions ----
+        def parse_num_t9(val):
+            if val is None or (isinstance(val, float) and pd.isna(val)): return 0.0
+            try:
+                if isinstance(val, (int, float)): return float(val)
+                s = str(val).strip().replace(',', '')
+                return float(s) if s else 0.0
+            except:
+                return 0.0
+
+        def load_sheet6_for_station(f_src, ma_tram_key):
+            """Tìm dòng data của mã trạm trong Sheet 6, trả về dict các cột."""
+            try:
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                xl = pd.ExcelFile(f_src)
+                sheet6 = next((s for s in xl.sheet_names if 'sheet 6' in s.lower() or 'hoàn vốn' in s.lower() or 'hoan von' in s.lower()), None)
+                if not sheet6: return None
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                df6 = pd.read_excel(f_src, sheet_name=sheet6, header=0)
+                # Cột mã trạm (cột C, index 2)
+                if len(df6.columns) < 3: return None
+                ma_col = df6.columns[2]
+                row_match = df6[df6[ma_col].astype(str).str.strip().str.lower() == ma_tram_key.lower()]
+                if row_match.empty: return None
+                return row_match.iloc[0].to_dict()
+            except:
+                return None
+
+        def get_rent_from_landlord_sheet(f_src, ma_tram_key):
+            """Lấy Số tiền thuê/tháng từ sheet 'Theo dõi thanh toán chủ nhà' theo mã trạm."""
+            try:
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                xl = pd.ExcelFile(f_src)
+                sheet_ll = next((s for s in xl.sheet_names if 'theo dõi thanh toán' in s.lower() or 'thanh toán chủ nhà' in s.lower()), None)
+                if not sheet_ll: return 0.0
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                df_ll = pd.read_excel(f_src, sheet_name=sheet_ll, header=0)
+                if df_ll.empty: return 0.0
+                # Tìm cột mã trạm
+                ma_col_ll = None
+                for c in df_ll.columns:
+                    if 'mã trạm' in str(c).lower() or ('mã' in str(c).lower() and 'trạm' in str(c).lower()):
+                        ma_col_ll = c; break
+                if not ma_col_ll:
+                    ma_col_ll = df_ll.columns[0]
+                # Tìm cột số tiền thuê/tháng
+                amount_col_ll = None
+                for c in df_ll.columns:
+                    c_low = str(c).lower()
+                    if 'thuê/tháng' in c_low or 'tiền thuê' in c_low or 'số tiền thuê' in c_low:
+                        amount_col_ll = c; break
+                if not amount_col_ll:
+                    for c in df_ll.columns:
+                        if 'số tiền' in str(c).lower():
+                            amount_col_ll = c; break
+                if not amount_col_ll: return 0.0
+                row_ll = df_ll[df_ll[ma_col_ll].astype(str).str.strip().str.lower() == ma_tram_key.lower()]
+                if row_ll.empty: return 0.0
+                return parse_num_t9(row_ll.iloc[0][amount_col_ll])
+            except:
+                return 0.0
+
+        def get_vina_monthly_from_sheet(f_src, ma_tram_key):
+            """Lấy tiền Vina trả/tháng từ sheet Vina."""
+            try:
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                xl = pd.ExcelFile(f_src)
+                vina_sheet = next((s for s in xl.sheet_names if 'vina' in s.lower()), None)
+                if not vina_sheet: return 0.0
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                df_vina = pd.read_excel(f_src, sheet_name=vina_sheet, header=0)
+                if df_vina.empty: return 0.0
+                ma_col_v = df_vina.columns[0]
+                for c in df_vina.columns:
+                    if 'mã' in str(c).lower(): ma_col_v = c; break
+                monthly_col_v = None
+                kw_list = ['trả/tháng', 'thuê/tháng', 'giá thuê', 'đơn giá', 'mức cước', 'số tiền', 'giá']
+                for kw in kw_list:
+                    for c in df_vina.columns:
+                        if kw in str(c).lower() and c != ma_col_v:
+                            monthly_col_v = c; break
+                    if monthly_col_v: break
+                if not monthly_col_v: return 0.0
+                row_v = df_vina[df_vina[ma_col_v].astype(str).str.strip().str.lower() == ma_tram_key.lower()]
+                if row_v.empty: return 0.0
+                return parse_num_t9(row_v.iloc[0][monthly_col_v])
+            except:
+                return 0.0
+
+        def get_mobi_monthly_from_sheet(f_src, ma_tram_key):
+            """Lấy tiền Mobi trả/tháng từ sheet Mobi."""
+            try:
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                xl = pd.ExcelFile(f_src)
+                mobi_sheet = next((s for s in xl.sheet_names if 'mobi' in s.lower()), None)
+                if not mobi_sheet: return 0.0
+                if hasattr(f_src, 'seek'): f_src.seek(0)
+                df_mobi = pd.read_excel(f_src, sheet_name=mobi_sheet, header=0)
+                if df_mobi.empty: return 0.0
+                ma_col_m = df_mobi.columns[0]
+                for c in df_mobi.columns:
+                    if 'mã' in str(c).lower(): ma_col_m = c; break
+                monthly_col_m = None
+                kw_list = ['trả/tháng', 'thuê/tháng', 'giá thuê', 'đơn giá', 'mức cước', 'số tiền', 'giá']
+                for kw in kw_list:
+                    for c in df_mobi.columns:
+                        if kw in str(c).lower() and c != ma_col_m:
+                            monthly_col_m = c; break
+                    if monthly_col_m: break
+                if not monthly_col_m: return 0.0
+                row_m = df_mobi[df_mobi[ma_col_m].astype(str).str.strip().str.lower() == ma_tram_key.lower()]
+                if row_m.empty: return 0.0
+                return parse_num_t9(row_m.iloc[0][monthly_col_m])
+            except:
+                return 0.0
+
+        # ---- UI Tab 9 ----
+        f_source_t9 = DEFAULT_FILE if DEFAULT_FILE else (uploaded_file if 'uploaded_file' in dir() else None)
+
+        st.markdown("#### 🔎 Bước 1: Nhập Mã Trạm")
+        col_ma, col_lookup = st.columns([3, 1])
+        with col_ma:
+            ma_tram_t9 = st.text_input("Ô 1 - Mã Trạm:", placeholder="Ví dụ: HCM001", key="t9_ma_tram")
+        with col_lookup:
+            st.markdown("<br>", unsafe_allow_html=True)
+            lookup_btn = st.button("🔍 Tra cứu", key="t9_lookup_btn", use_container_width=True)
+
+        # State cho auto-fill
+        if 't9_data' not in st.session_state:
+            st.session_state['t9_data'] = {}
+
+        if lookup_btn and ma_tram_t9.strip() and f_source_t9:
+            row6 = load_sheet6_for_station(f_source_t9, ma_tram_t9.strip())
+            vina_monthly_auto = get_vina_monthly_from_sheet(f_source_t9, ma_tram_t9.strip())
+            mobi_monthly_auto = get_mobi_monthly_from_sheet(f_source_t9, ma_tram_t9.strip())
+            rent_auto = get_rent_from_landlord_sheet(f_source_t9, ma_tram_t9.strip())
+
+            if row6 is not None:
+                # Tìm các cột theo keyword
+                cols_list = list(row6.keys())
+                def find_col_val(keywords):
+                    for kw in keywords:
+                        for k in cols_list:
+                            if kw.lower() in str(k).lower():
+                                return parse_num_t9(row6[k])
+                    return 0.0
+
+                tong_cp_sau_vat = find_col_val(['tổng chi phí sau vat', 'tổng cp sau vat', 'chi phí sau vat', 'tổng chi phí'])
+                st.session_state['t9_data'] = {
+                    'found': True,
+                    'tong_cp_sau_vat': tong_cp_sau_vat,
+                    'vina_monthly': vina_monthly_auto,
+                    'mobi_monthly': mobi_monthly_auto,
+                    'rent': rent_auto,
+                    'ma_tram': ma_tram_t9.strip()
+                }
+                st.success(f"✅ Tìm thấy dữ liệu trạm **{ma_tram_t9.strip()}** trong Sheet 6. Đã tự động điền các trường.")
+            else:
+                st.session_state['t9_data'] = {
+                    'found': False,
+                    'vina_monthly': vina_monthly_auto,
+                    'mobi_monthly': mobi_monthly_auto,
+                    'rent': rent_auto,
+                    'ma_tram': ma_tram_t9.strip()
+                }
+                st.warning(f"⚠️ Không tìm thấy mã trạm **{ma_tram_t9.strip()}** trong Sheet 6. Vui lòng nhập thủ công 'Tổng Chi Phí Sau VAT'.")
+
+        t9 = st.session_state.get('t9_data', {})
+        found_t9 = t9.get('found', False)
+        prefill_tcp = t9.get('tong_cp_sau_vat', 0.0)
+        prefill_vina = t9.get('vina_monthly', 0.0)
+        prefill_mobi = t9.get('mobi_monthly', 0.0)
+        prefill_rent = t9.get('rent', 0.0)
+
+        st.markdown("---")
+        st.markdown("#### 📝 Bước 2: Nhập Thông Số Tài Chính")
+
+        # Ô 2: Tổng Chi Phí Sau VAT
+        st.markdown("**Ô 2 - Tổng Chi Phí Sau VAT (VNĐ):**")
+        if found_t9 and prefill_tcp > 0:
+            st.info(f"✅ Auto điền từ Sheet 6: **{prefill_tcp:,.0f}** VNĐ")
+            tcp_val = st.number_input("", min_value=0.0, value=float(prefill_tcp), step=1000000.0, format="%.0f", key="t9_tcp", label_visibility="collapsed")
+        else:
+            if t9.get('ma_tram'):
+                st.warning("✋ Mã trạm không có trong Sheet 6 — vui lòng nhập tay:")
+            tcp_val = st.number_input("", min_value=0.0, value=0.0, step=1000000.0, format="%.0f", key="t9_tcp", label_visibility="collapsed")
+
+        # Ô 3: Chi phí lãi vay (= F4 = Tổng CP Sau VAT * 12% / 12 * 24)
+        lai_vay_f = tcp_val * 0.12 / 12 * 24 if tcp_val > 0 else 0.0
+        st.markdown(f"**Ô 3 - Chi Phí Lãi Vay** *(= Tổng CP Sau VAT × 12% / 12 × 24 tháng)*:")
+        st.markdown(f"<div style='background:#eef6ff;border-left:4px solid #1565c0;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"🔵 <b>{lai_vay_f:,.0f}</b> VNĐ</div>", unsafe_allow_html=True)
+
+        # Ô 4: Tổng chi phí thực bỏ ra (có tính lãi vay) (= G4 = Tổng CP Sau VAT + Chi phí lãi vay)
+        tong_cp_thuc = tcp_val + lai_vay_f
+        st.markdown(f"**Ô 4 - Tổng Chi Phí Thực Bỏ Ra (Có Tính Lãi Vay)** *(= Tổng CP Sau VAT + Lãi Vay)*:")
+        st.markdown(f"<div style='background:#eef6ff;border-left:4px solid #1565c0;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"🔵 <b>{tong_cp_thuc:,.0f}</b> VNĐ</div>", unsafe_allow_html=True)
+
+        # Ô 5: Chi phí feedback lại Vina
+        st.markdown("**Ô 5 - Chi Phí Feedback Lại Vina:**")
+        col5a, col5b_label = st.columns([2, 3])
+        with col5a:
+            thang_fb_vina = st.number_input("Ô 5.1 - Số tháng Feedback Vina:", min_value=0, value=0, step=1, key="t9_thang_fb_vina")
+        if prefill_vina > 0:
+            st.caption(f"💡 Tiền Vina trả/tháng tự động: **{prefill_vina:,.0f}** VNĐ")
+            vina_monthly_t9 = st.number_input("Tiền Vina/tháng (VNĐ):", min_value=0.0, value=float(prefill_vina), step=100000.0, format="%.0f", key="t9_vina_monthly")
+        else:
+            vina_monthly_t9 = st.number_input("Tiền Vina/tháng (VNĐ):", min_value=0.0, value=0.0, step=100000.0, format="%.0f", key="t9_vina_monthly")
+        # Ô 5.2 = Tiền Vina/tháng × Số tháng Feedback Vina / 1.1
+        fb_vina_val = vina_monthly_t9 * thang_fb_vina / 1.1 if thang_fb_vina > 0 else 0.0
+        st.markdown(f"Ô 5.2 - **Chi Phí Feedback Vina** *(= {vina_monthly_t9:,.0f} × {thang_fb_vina} / 1.1)*:")
+        st.markdown(f"<div style='background:#e8f5e9;border-left:4px solid #2e7d32;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"🟢 <b>{fb_vina_val:,.0f}</b> VNĐ</div>", unsafe_allow_html=True)
+
+        # Ô 6: Chi phí feedback lại Mobi
+        st.markdown("**Ô 6 - Chi Phí Feedback Lại Mobi:**")
+        thang_fb_mobi = st.number_input("Ô 6.1 - Số tháng Feedback Mobi:", min_value=0, value=0, step=1, key="t9_thang_fb_mobi")
+        if prefill_mobi > 0:
+            st.caption(f"💡 Tiền Mobi trả/tháng tự động: **{prefill_mobi:,.0f}** VNĐ")
+            mobi_monthly_t9 = st.number_input("Tiền Mobi/tháng (VNĐ):", min_value=0.0, value=float(prefill_mobi), step=100000.0, format="%.0f", key="t9_mobi_monthly")
+        else:
+            mobi_monthly_t9 = st.number_input("Tiền Mobi/tháng (VNĐ):", min_value=0.0, value=0.0, step=100000.0, format="%.0f", key="t9_mobi_monthly")
+        fb_mobi_val = mobi_monthly_t9 * thang_fb_mobi / 1.1 if thang_fb_mobi > 0 else 0.0
+        st.markdown(f"Ô 6.2 - **Chi Phí Feedback Mobi** *(= {mobi_monthly_t9:,.0f} × {thang_fb_mobi} / 1.1)*:")
+        st.markdown(f"<div style='background:#e8f5e9;border-left:4px solid #2e7d32;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"🟢 <b>{fb_mobi_val:,.0f}</b> VNĐ</div>", unsafe_allow_html=True)
+
+        # Ô 7: Tổng chi phí bỏ ra (= J4 = G4 + Feedback Vina + Feedback Mobi)
+        tong_cp_bo_ra = tong_cp_thuc + fb_vina_val + fb_mobi_val
+        st.markdown("**Ô 7 - Tổng Chi Phí Bỏ Ra** *(= Tổng CP Thực + Feedback Vina + Feedback Mobi)*:")
+        st.markdown(f"<div style='background:#fff3e0;border-left:4px solid #e65100;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"🟠 <b>{tong_cp_bo_ra:,.0f}</b> VNĐ</div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("#### 💰 Bước 3: Thông Tin Thu Nhập Hàng Tháng")
+
+        # Ô 8: Tiền trả chủ nhà/tháng - auto từ sheet TDTTCN
+        st.markdown("**Ô 8 - Tiền Trả Chủ Nhà/Tháng:**")
+        if prefill_rent > 0:
+            st.caption(f"💡 Tự động từ Sheet 'Theo dõi thanh toán chủ nhà': **{prefill_rent:,.0f}** VNĐ/tháng")
+            rent_t9 = st.number_input("Tiền thuê chủ nhà/tháng (VNĐ):", min_value=0.0, value=float(prefill_rent), step=100000.0, format="%.0f", key="t9_rent")
+        else:
+            rent_t9 = st.number_input("Tiền thuê chủ nhà/tháng (VNĐ):", min_value=0.0, value=0.0, step=100000.0, format="%.0f", key="t9_rent")
+
+        # Ô 9: Tiền Viettel trả/tháng
+        viettel_monthly_t9 = st.number_input("**Ô 9 - Tiền Nhà Mạng Viettel Trả/Tháng (VNĐ):**", min_value=0.0, value=0.0, step=100000.0, format="%.0f", key="t9_viettel")
+
+        # Ô 10 Vina (hiển thị lại với label khác)
+        st.markdown(f"**Ô 10a - Tiền Nhà Mạng Vina Trả/Tháng:** → Sử dụng giá trị đã nhập ở Ô 5 = **{vina_monthly_t9:,.0f}** VNĐ")
+
+        # Ô 10b: Mobi
+        st.markdown(f"**Ô 10b - Tiền Nhà Mạng Mobi Trả/Tháng:** → Sử dụng giá trị đã nhập ở Ô 6 = **{mobi_monthly_t9:,.0f}** VNĐ")
+
+        st.markdown("---")
+        st.markdown("#### 📊 Kết Quả Tính Toán")
+
+        # Ô 11: Tổng thu/tháng (gồm VAT) = O4 = Viettel + Vina + Mobi
+        tong_thu_incl_vat = viettel_monthly_t9 + vina_monthly_t9 + mobi_monthly_t9
+        st.markdown(f"**Ô 11 - Tổng Thu/Tháng (Gồm VAT)** *(= Viettel + Vina + Mobi)*:")
+        st.markdown(f"<div style='background:#f3e5f5;border-left:4px solid #6a1b9a;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"🟣 <b>{tong_thu_incl_vat:,.0f}</b> VNĐ</div>", unsafe_allow_html=True)
+
+        # Ô 12: Tổng thu/tháng sau khi trừ thuế 10% = P4 = O4 / 1.1
+        tong_thu_after_tax = tong_thu_incl_vat / 1.1 if tong_thu_incl_vat > 0 else 0.0
+        st.markdown(f"**Ô 12 - Tổng Thu/Tháng Sau Khi Trừ Thuế 10%** *(= Tổng Thu / 1.1)*:")
+        st.markdown(f"<div style='background:#f3e5f5;border-left:4px solid #6a1b9a;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"🟣 <b>{tong_thu_after_tax:,.0f}</b> VNĐ</div>", unsafe_allow_html=True)
+
+        # Ô 13: Delta, lãi ròng/tháng = Q4 = Tổng thu sau thuế - Tiền chủ nhà
+        delta_lai_rong = tong_thu_after_tax - rent_t9
+        delta_color = "#2e7d32" if delta_lai_rong >= 0 else "#c62828"
+        delta_icon = "📈" if delta_lai_rong >= 0 else "📉"
+        st.markdown(f"**Ô 13 - Delta, Lãi Ròng/Tháng** *(= Tổng Thu Sau Thuế − Tiền Chủ Nhà)*:")
+        st.markdown(f"<div style='background:#{'e8f5e9' if delta_lai_rong >= 0 else 'ffebee'};border-left:4px solid {delta_color};padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:8px;'>"
+                    f"{delta_icon} <b style='color:{delta_color};'>{delta_lai_rong:,.0f}</b> VNĐ/tháng</div>", unsafe_allow_html=True)
+
+        # Ô 14: Thời gian hoàn vốn = R4 = Tổng CP Bỏ Ra / Lãi Ròng/Tháng
+        thoi_gian_hoan_von = None  # Khởi tạo mặc định
+        st.markdown("**Ô 14 - ⏱️ Thời Gian Hoàn Vốn (Tháng)** *(= Tổng CP Bỏ Ra / Lãi Ròng/Tháng)*:")
+        if delta_lai_rong > 0:
+            thoi_gian_hoan_von = tong_cp_bo_ra / delta_lai_rong
+            nam = int(thoi_gian_hoan_von // 12)
+            thang_du = thoi_gian_hoan_von % 12
+            st.markdown(f"""
+            <div style='background:linear-gradient(135deg,#fff9c4,#fffde7);border:2px solid #f9a825;
+                        border-radius:10px;padding:16px 20px;text-align:center;margin:10px 0;'>
+                <div style='font-size:32px;font-weight:900;color:#e65100;'>{thoi_gian_hoan_von:.1f} tháng</div>
+                <div style='font-size:16px;color:#555;margin-top:6px;'>≈ {nam} năm {thang_du:.1f} tháng</div>
+                <div style='font-size:13px;color:#888;margin-top:4px;'>Tổng CP: {tong_cp_bo_ra:,.0f} VNĐ  ÷  Lãi ròng: {delta_lai_rong:,.0f} VNĐ/tháng</div>
+            </div>
+            """, unsafe_allow_html=True)
+        elif delta_lai_rong == 0:
+            st.error("⚠️ Lãi ròng = 0 → Không thể tính thời gian hoàn vốn!")
+        else:
+            st.error(f"❌ Lãi ròng âm ({delta_lai_rong:,.0f} VNĐ/tháng) → Dự án **KHÔNG có khả năng hoàn vốn** với thông số này!")
+
+        # Bảng tổng kết
+        st.markdown("---")
+        st.markdown("#### 📋 Bảng Tổng Kết Các Thông Số")
+        summary_data = {
+            "Chỉ tiêu": [
+                "Tổng Chi Phí Sau VAT",
+                "Chi Phí Lãi Vay (12%/năm × 24 tháng)",
+                "Tổng CP Thực Bỏ Ra (Có Lãi Vay)",
+                f"Feedback Vina ({thang_fb_vina} tháng)",
+                f"Feedback Mobi ({thang_fb_mobi} tháng)",
+                "Tổng Chi Phí Bỏ Ra",
+                "---",
+                "Tiền Chủ Nhà/Tháng",
+                "Viettel Trả/Tháng",
+                "Vina Trả/Tháng",
+                "Mobi Trả/Tháng",
+                "Tổng Thu/Tháng (Gồm VAT)",
+                "Tổng Thu/Tháng (Sau Thuế 10%)",
+                "Delta - Lãi Ròng/Tháng",
+                "⏱️ Thời Gian Hoàn Vốn"
+            ],
+            "Giá Trị": [
+                f"{tcp_val:,.0f} VNĐ",
+                f"{lai_vay_f:,.0f} VNĐ",
+                f"{tong_cp_thuc:,.0f} VNĐ",
+                f"{fb_vina_val:,.0f} VNĐ",
+                f"{fb_mobi_val:,.0f} VNĐ",
+                f"{tong_cp_bo_ra:,.0f} VNĐ",
+                "───────────",
+                f"{rent_t9:,.0f} VNĐ",
+                f"{viettel_monthly_t9:,.0f} VNĐ",
+                f"{vina_monthly_t9:,.0f} VNĐ",
+                f"{mobi_monthly_t9:,.0f} VNĐ",
+                f"{tong_thu_incl_vat:,.0f} VNĐ",
+                f"{tong_thu_after_tax:,.0f} VNĐ",
+                f"{delta_lai_rong:,.0f} VNĐ/tháng",
+                f"{thoi_gian_hoan_von:.1f} tháng" if delta_lai_rong > 0 else "N/A"
+            ]
+        }
+        df_summary_t9 = pd.DataFrame(summary_data)
+        st.markdown("""
+        <style>
+        .t9-summary-table { width:100%;border-collapse:collapse;font-family:"Source Sans Pro",sans-serif; }
+        .t9-summary-table th { background:#ffeaea!important;color:#ff0000!important;font-weight:900!important;border:1px solid #e0e0e0;padding:10px;font-size:15px; }
+        .t9-summary-table td { border:1px solid #e0e0e0;padding:8px 12px;font-size:14px; }
+        .t9-summary-table tr:nth-child(even) { background:#f9f9f9; }
+        .t9-summary-table tr:hover { background:#fff3f3; }
+        .t9-summary-table tr:last-child td { background:#fff9c4!important;font-weight:900!important;font-size:16px!important;color:#e65100!important; }
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown(df_summary_t9.to_html(index=False, classes="t9-summary-table", escape=False), unsafe_allow_html=True)
 
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
