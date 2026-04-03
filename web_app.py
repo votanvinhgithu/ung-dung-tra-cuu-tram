@@ -817,17 +817,18 @@ def render_cards(df_to_render, is_payment_tab=False):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
-        "📄 DS TRẠM TT CHỦ NHÀ",
+        "💵 DS TRẠM TT CHỦ NHÀ",
         "💰 DOANH THU CÁC NHÀ MẠNG",
         "📈 BÁO CÁO LỢI NHUẬN CÔNG TY",
-        "🏦 CÚ PHÁP CHUYỂN KHOẢN APP NH",
-        "📉 BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
-        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM",
-        "🔍 TRA CỨU HOÀN VỐN (Sheet 6)",
-        "🧮 TÍNH THỜI GIAN HOÀN VỐN (ROI)"
+        "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH",
+        "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
+        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM"
     ])
+
+    # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
+    with tab1:
         with st.form(key='search_form'):
             st.markdown("### 🔍 Phễu Tra Cứu (Có bổ sung Data Sheet 2)")
             input_text = st.text_area("Dán mã trạm cần tìm (ngăn cách bởi dấu phẩy hoặc enter xuống dòng):", height=100)
@@ -1847,83 +1848,5 @@ if not df_source.empty:
                     """, unsafe_allow_html=True)
                     st.markdown(df_map_show.to_html(index=False, classes="map-table", escape=False), unsafe_allow_html=True)
 
-
-    # ------------ TAB 8: TRA CỨU CHI TIẾT HOÀN VỐN (SHEET 6) ------------
-    with tab8:
-        st.markdown("### 🔍 TRA CỨU THỜI GIAN HOÀN VỐN (Sheet 6)")
-        st.info("💡 Hệ thống tự động tìm kiếm thông tin hoàn vốn từ Sheet 6 dựa trên Mã Trạm.")
-
-        with st.form(key='hoan_von_search_form'):
-            ma_t8 = st.text_input("📝 Nhập mã trạm (Hỗ trợ nhiều mã cách nhau bằng dấu phẩy):", placeholder="Ví dụ: HCM001, HCM002")
-            submit_t8 = st.form_submit_button(label="🔍 TÌM KIẾM DỮ LIỆU", use_container_width=True)
-
-        if submit_t8:
-            f_src_t8 = DEFAULT_FILE if DEFAULT_FILE else (uploaded_file if 'uploaded_file' in dir() else None)
-            if f_src_t8:
-                try:
-                    if hasattr(f_src_t8, 'seek'): f_src_t8.seek(0)
-                    xl = pd.ExcelFile(f_src_t8)
-                    s6 = next((s for s in xl.sheet_names if '6' in s or 'vốn' in s.lower()), None)
-                    if s6:
-                        if hasattr(f_src_t8, 'seek'): f_src_t8.seek(0)
-                        df6_t8 = pd.read_excel(f_src_t8, sheet_name=s6)
-                        m_col = df6_t8.columns[2] if len(df6_t8.columns) > 2 else df6_t8.columns[0]
-                        if ma_t8.strip():
-                            keys = [k.strip().lower() for k in ma_t8.replace(',', '\n').split('\n') if k.strip()]
-                            res_t8 = df6_t8[df6_t8[m_col].astype(str).str.strip().str.lower().isin(keys)].copy()
-                        else: res_t8 = df6_t8.copy()
-                        
-                        if not res_t8.empty:
-                            st.success(f"✅ Tìm thấy {len(res_t8)} bản ghi.")
-                            st.dataframe(res_t8, hide_index=True)
-                            for _, r in res_t8.head(15).iterrows():
-                                with st.expander(f"📌 {r[m_col]}", expanded=False):
-                                    for c in res_t8.columns: st.write(f"**{c}:** {r[c]}")
-                        else: st.warning("🔍 Không tìm thấy dữ liệu.")
-                    else: st.error("❌ Không thấy Sheet 6.")
-                except Exception as e: st.error(f"❌ Lỗi: {e}")
-
-    # ------------ TAB 9: TÍNH THỜI GIAN HOÀN VỐN (ROI) ------------
-    with tab9:
-        st.markdown("### 🧮 CÔNG CỤ TÍNH THỜI GIAN HOÀN VỐN (ROI)")
-        def parse_roi(v):
-            try: return float(str(v).replace(',', '')) if v and not pd.isna(v) else 0.0
-            except: return 0.0
-            
-        f_t9 = DEFAULT_FILE if DEFAULT_FILE else (uploaded_file if 'uploaded_file' in dir() else None)
-        c1_t9, c2_t9 = st.columns([3,1])
-        with c1_t9: ma_roi = st.text_input("📍 Mã Trạm (Tự điền):", key="roi_ma_t9")
-        with c2_t9:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🚀 Lấy giá trị"):
-                if f_t9 and ma_roi.strip():
-                    try:
-                        xl = pd.ExcelFile(f_t9); s6 = next((s for s in xl.sheet_names if 'sheet 6' in s.lower()), None)
-                        tcp = 0.0
-                        if s6:
-                            df6 = pd.read_excel(f_t9, sheet_name=s6)
-                            m = df6[df6.iloc[:,2].astype(str).str.strip().str.lower() == ma_roi.strip().lower()]
-                            if not m.empty: tcp = parse_roi(next((v for k,v in m.iloc[0].to_dict().items() if 'sau vat' in str(k).lower()), 0))
-                        st.session_state['roi_v'] = {'tcp': tcp, 'ma': ma_roi.strip()}
-                        st.success(f"✅ Đã nạp!")
-                    except: pass
-
-        st.markdown("---")
-        rv = st.session_state.get('roi_v', {})
-        cha, chb = st.columns(2)
-        with cha:
-            st.subheader("💰 ĐẦU TƯ")
-            tcp_in = st.number_input("Tổng vốn (VAT):", value=float(rv.get('tcp', 0.0)), step=1000000.0, format="%.0f")
-            li_v = tcp_in * 0.12 / 12 * 24 if tcp_in > 0 else 0.0
-            st.write(f"Ước tính lãi vay (12%/24th): **{li_v:,.0f}**")
-            total_in = tcp_in + li_v
-            st.warning(f"### TỔNG CHI PHÍ: {total_in:,.0f}")
-        with chb:
-            st.subheader("📊 LỢI NHUẬN")
-            p_mo = st.number_input("Lợi nhuận/tháng:", value=5000000.0, step=100000.0, format="%.0f")
-            if p_mo > 0:
-                mos = total_in / p_mo
-                st.success(f"## HOÀN VỐN: **{mos:.1f} THÁNG**")
-                st.progress(min(mos/60, 1.0))
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
