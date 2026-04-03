@@ -1906,92 +1906,365 @@ if not df_source.empty:
         if f_source:
             df_payback = load_payback_data(f_source)
             if not df_payback.empty:
-                # Bọc trong form để có nút Search
-                with st.form(key='payback_search_form'):
-                    st.markdown("🔍 **Phễu Tra Cứu Hoàn Vốn**")
-                    search_query_t8 = st.text_area("Dán mã trạm cần tìm (ngăn cách bởi dấu phẩy hoặc enter xuống dòng):", height=100, key="query_t8")
-                    submit_search_t8 = st.form_submit_button(label="🔍 TÌM KIẾM CHI TIẾT", use_container_width=True)
-                
                 # Tìm cột mã trạm linh hoạt
                 ma_tram_col_t8 = next((c for c in df_payback.columns if "mã trạm" in str(c).lower()), "Mã trạm")
                 
-                df_filtered_t8 = df_payback.copy()
-                if search_query_t8.strip():
-                    codes_t8 = [c.strip().lower() for c in search_query_t8.replace(',', '\n').split('\n') if c.strip()]
-                    if codes_t8:
-                        df_filtered_t8 = df_filtered_t8[df_filtered_t8[ma_tram_col_t8].astype(str).str.strip().str.lower().isin(codes_t8)]
+                # ========== CHỌN CHẾ ĐỘ XEM ==========
+                view_mode_t8 = st.radio(
+                    "🔀 Chọn chế độ xem:",
+                    ["📋 Xem thông tin thông thường (All dữ liệu)", "🏗️ Lợi nhuận khi có thêm nhà mạng vào"],
+                    horizontal=True,
+                    key="view_mode_tab8"
+                )
                 
-                if df_filtered_t8.empty:
-                    st.warning("⚠️ Không tìm thấy dữ liệu cho mã trạm yêu cầu.")
-                else:
-                    # ÉP KIỂU SỐ ĐỂ SUM CHÍNH XÁC (Xử lý trường hợp Pandas hiểu nhầm là chuỗi)
-                    for col in df_filtered_t8.columns:
-                        if col != ma_tram_col_t8:
-                            # Nếu là chuỗi, xóa bỏ các ký tự gây lỗi convert
-                            if df_filtered_t8[col].dtype == object:
-                                df_filtered_t8[col] = df_filtered_t8[col].astype(str).str.replace(',', '').replace(' ', '').replace('VNĐ', '').replace('vnđ', '')
-                            # Ép về số, lỗi thì để NaN
-                            df_filtered_t8[col] = pd.to_numeric(df_filtered_t8[col], errors='coerce')
-
-                    # Tên cột đặc thù theo logic anh yêu cầu
-                    col_cost = "Tổng chi phí bỏ ra"
-                    col_delta = "Delta, lãi ròng/tháng"
-                    col_payback = "Thời gian (tháng) hoàn vốn"
+                st.markdown("---")
+                
+                # ==========================================
+                # CHẾ ĐỘ 1: XEM THÔNG TIN THÔNG THƯỜNG
+                # ==========================================
+                if view_mode_t8 == "📋 Xem thông tin thông thường (All dữ liệu)":
+                    with st.form(key='payback_search_form'):
+                        st.markdown("🔍 **Phễu Tra Cứu Hoàn Vốn**")
+                        search_query_t8 = st.text_area("Dán mã trạm cần tìm (ngăn cách bởi dấu phẩy hoặc enter xuống dòng):", height=100, key="query_t8")
+                        submit_search_t8 = st.form_submit_button(label="🔍 TÌM KIẾM CHI TIẾT", use_container_width=True)
                     
-                    # Tìm tên cột thực tế linh hoạt
-                    actual_cost_col = next((c for c in df_filtered_t8.columns if col_cost.lower() in str(c).lower()), None)
-                    actual_delta_col = next((c for c in df_filtered_t8.columns if col_delta.lower() in str(c).lower()), None)
-                    actual_payback_col = next((c for c in df_filtered_t8.columns if col_payback.lower() in str(c).lower()), None)
+                    df_filtered_t8 = df_payback.copy()
+                    if search_query_t8.strip():
+                        codes_t8 = [c.strip().lower() for c in search_query_t8.replace(',', '\n').split('\n') if c.strip()]
+                        if codes_t8:
+                            df_filtered_t8 = df_filtered_t8[df_filtered_t8[ma_tram_col_t8].astype(str).str.strip().str.lower().isin(codes_t8)]
+                    
+                    if df_filtered_t8.empty:
+                        st.warning("⚠️ Không tìm thấy dữ liệu cho mã trạm yêu cầu.")
+                    else:
+                        # ÉP KIỂU SỐ ĐỂ SUM CHÍNH XÁC
+                        for col in df_filtered_t8.columns:
+                            if col != ma_tram_col_t8:
+                                if df_filtered_t8[col].dtype == object:
+                                    df_filtered_t8[col] = df_filtered_t8[col].astype(str).str.replace(',', '').replace(' ', '').replace('VNĐ', '').replace('vnđ', '')
+                                df_filtered_t8[col] = pd.to_numeric(df_filtered_t8[col], errors='coerce')
 
-                    # Tính hàng tổng cộng
-                    num_cols_t8 = df_filtered_t8.select_dtypes(include=['number']).columns.tolist()
-                    sum_data_t8 = {}
-                    for col in df_filtered_t8.columns:
-                        if str(col).lower() == str(ma_tram_col_t8).lower():
-                            sum_data_t8[col] = "TỔNG CỘNG"
-                        elif col in num_cols_t8:
-                            # Kiểm tra nếu là cột Hoàn Vốn thì áp dụng công thức: Tổng Chi Phí / Tổng Delta
-                            if actual_payback_col and str(col).lower() == str(actual_payback_col).lower():
-                                sum_c = df_filtered_t8[actual_cost_col].sum() if actual_cost_col else 0
-                                sum_d = df_filtered_t8[actual_delta_col].sum() if actual_delta_col else 0
-                                sum_data_t8[col] = (sum_c / sum_d) if sum_d != 0 else 0
+                        col_cost = "Tổng chi phí bỏ ra"
+                        col_delta = "Delta, lãi ròng/tháng"
+                        col_payback = "Thời gian (tháng) hoàn vốn"
+                        
+                        actual_cost_col = next((c for c in df_filtered_t8.columns if col_cost.lower() in str(c).lower()), None)
+                        actual_delta_col = next((c for c in df_filtered_t8.columns if col_delta.lower() in str(c).lower()), None)
+                        actual_payback_col = next((c for c in df_filtered_t8.columns if col_payback.lower() in str(c).lower()), None)
+
+                        # Tính hàng tổng cộng
+                        num_cols_t8 = df_filtered_t8.select_dtypes(include=['number']).columns.tolist()
+                        sum_data_t8 = {}
+                        for col in df_filtered_t8.columns:
+                            if str(col).lower() == str(ma_tram_col_t8).lower():
+                                sum_data_t8[col] = "TỔNG CỘNG"
+                            elif col in num_cols_t8:
+                                if actual_payback_col and str(col).lower() == str(actual_payback_col).lower():
+                                    sum_c = df_filtered_t8[actual_cost_col].sum() if actual_cost_col else 0
+                                    sum_d = df_filtered_t8[actual_delta_col].sum() if actual_delta_col else 0
+                                    sum_data_t8[col] = (sum_c / sum_d) if sum_d != 0 else 0
+                                else:
+                                    sum_data_t8[col] = df_filtered_t8[col].sum()
                             else:
-                                sum_data_t8[col] = df_filtered_t8[col].sum()
+                                sum_data_t8[col] = ""
+                        
+                        df_sum_t8 = pd.DataFrame([sum_data_t8])
+                        df_display_t8 = pd.concat([df_sum_t8, df_filtered_t8], ignore_index=True)
+                        
+                        # Style cho bảng (Header Đỏ Đậm, Hàng tổng màu Xanh Lá)
+                        st.markdown("""
+                        <style>
+                        .red-header-tab8 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                        .red-header-tab8 th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; }
+                        .red-header-tab8 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
+                        .red-header-tab8 tr:nth-child(even) { background-color: #f9f9f9; }
+                        .red-header-tab8 tr:hover { background-color: #f1f1f1; }
+                        .red-header-tab8 tbody tr:first-child td { color: #28a745 !important; font-weight: 900 !important; font-size: 14px !important; background-color: #e8f5e9 !important; }
+                        </style>
+                        """, unsafe_allow_html=True)
+                        
+                        # Bảng 1: Lưới hàng ngang
+                        df_table1_t8 = df_display_t8.copy()
+                        for col in num_cols_t8:
+                            if actual_payback_col and str(col).lower() == str(actual_payback_col).lower():
+                                df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
+                            else:
+                                df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
+                        
+                        st.markdown('<h4 style="color:red; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Hàng Ngang</h4>', unsafe_allow_html=True)
+                        st.markdown(df_table1_t8.to_html(index=False, classes="red-header-tab8", escape=False), unsafe_allow_html=True)
+                        
+                        # Bảng 2: Cột dọc (Mobile)
+                        st.markdown("---")
+                        st.markdown('<h4 style="color:red; font-weight:bold;">📱 Bảng 2: Chi Tiết Dạng Cột (Xem Điện Thoại)</h4>', unsafe_allow_html=True)
+                        render_cards(df_filtered_t8, is_payment_tab=False, columns_to_show=df_filtered_t8.columns.tolist())
+                
+                # ==========================================
+                # CHẾ ĐỘ 2: LỢI NHUẬN KHI CÓ THÊM NHÀ MẠNG
+                # ==========================================
+                else:
+                    st.markdown('<h3 style="color:#ff6600; font-weight:bold;">🏗️ Lợi Nhuận Khi Có Thêm Nhà Mạng Vào</h3>', unsafe_allow_html=True)
+                    st.info("Nhập thông tin bên dưới để mô phỏng lợi nhuận khi thêm nhà mạng Vina / Mobi vào trạm. Hệ thống sẽ so sánh dữ liệu gốc (Hàng 1) và dữ liệu mô phỏng (Hàng 2).")
+
+                    with st.form(key='add_network_form'):
+                        col_inp1, col_inp2 = st.columns(2)
+                        with col_inp1:
+                            inp_ma_tram = st.text_input("📌 Mã trạm:", placeholder="Ví dụ: SGN0008", key="add_net_ma_tram")
+                            inp_fb_vina = st.text_input("📅 Số tháng Feedback Vina:", placeholder="Ví dụ: 6", key="add_net_fb_vina")
+                            inp_tien_vina = st.text_input("💰 Tiền nhà mạng Vina trả/tháng:", placeholder="Ví dụ: 5000000", key="add_net_tien_vina")
+                        with col_inp2:
+                            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                            inp_fb_mobi = st.text_input("📅 Số tháng Feedback Mobi:", placeholder="Ví dụ: 9", key="add_net_fb_mobi")
+                            inp_tien_mobi = st.text_input("💰 Tiền nhà mạng Mobi trả/tháng:", placeholder="Ví dụ: 6000000", key="add_net_tien_mobi")
+                        
+                        submit_add_net = st.form_submit_button(label="📊 MÔ PHỎNG LỢI NHUẬN", use_container_width=True)
+                    
+                    if submit_add_net and inp_ma_tram.strip():
+                        # Tìm trạm trong dữ liệu gốc
+                        match_mask = df_payback[ma_tram_col_t8].astype(str).str.strip().str.lower() == inp_ma_tram.strip().lower()
+                        df_match = df_payback[match_mask]
+                        
+                        if df_match.empty:
+                            st.error(f"❌ Không tìm thấy mã trạm **{inp_ma_tram.strip()}** trong dữ liệu Sheet 6.")
                         else:
-                            sum_data_t8[col] = ""
-                    
-                    df_sum_t8 = pd.DataFrame([sum_data_t8])
-                    df_display_t8 = pd.concat([df_sum_t8, df_filtered_t8], ignore_index=True)
-                    
-                    # Style cho bảng 1 (Header Đỏ Đậm, Hàng tổng màu Xanh Lá)
-                    st.markdown("""
-                    <style>
-                    .red-header-tab8 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
-                    .red-header-tab8 th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; }
-                    .red-header-tab8 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
-                    .red-header-tab8 tr:nth-child(even) { background-color: #f9f9f9; }
-                    .red-header-tab8 tr:hover { background-color: #f1f1f1; }
-                    /* Hàng tổng cộng màu xanh lá đặc trưng của Tab 6 */
-                    .red-header-tab8 tbody tr:first-child td { color: #28a745 !important; font-weight: 900 !important; font-size: 14px !important; background-color: #e8f5e9 !important; }
-                    </style>
-                    """, unsafe_allow_html=True)
-                    
-                    # Bảng 1: Lưới hàng ngang
-                    df_table1_t8 = df_display_t8.copy()
-                    for col in num_cols_t8:
-                        # Format riêng cho cột hoàn vốn (2 chữ số thập phân)
-                        if actual_payback_col and str(col).lower() == str(actual_payback_col).lower():
-                            df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
-                        else:
-                            df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
-                    
-                    st.markdown('<h4 style="color:red; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Hàng Ngang</h4>', unsafe_allow_html=True)
-                    st.markdown(df_table1_t8.to_html(index=False, classes="red-header-tab8", escape=False), unsafe_allow_html=True)
-                    
-                    # Bảng 2: Cột dọc (Mobile)
-                    st.markdown("---")
-                    st.markdown('<h4 style="color:red; font-weight:bold;">📱 Bảng 2: Chi Tiết Dạng Cột (Xem Điện Thoại)</h4>', unsafe_allow_html=True)
-                    render_cards(df_filtered_t8, is_payment_tab=False, columns_to_show=df_filtered_t8.columns.tolist())
+                            row_orig = df_match.iloc[0].copy()
+                            
+                            # Parse giá trị input
+                            def parse_money_input(val_str):
+                                if not val_str or not val_str.strip():
+                                    return 0.0
+                                s = str(val_str).strip().replace(',', '').replace('.', '').replace(' ', '')
+                                try:
+                                    return float(s)
+                                except:
+                                    return 0.0
+                            
+                            def parse_int_input(val_str):
+                                if not val_str or not val_str.strip():
+                                    return 0
+                                try:
+                                    return int(str(val_str).strip())
+                                except:
+                                    return 0
+                            
+                            tien_vina_new = parse_money_input(inp_tien_vina)
+                            tien_mobi_new = parse_money_input(inp_tien_mobi)
+                            fb_vina_months = parse_int_input(inp_fb_vina)
+                            fb_mobi_months = parse_int_input(inp_fb_mobi)
+                            
+                            # Lấy giá trị gốc
+                            col_vt_pay = next((c for c in df_payback.columns if "viettel" in str(c).lower() and "trả/tháng" in str(c).lower()), None)
+                            col_vi_pay = next((c for c in df_payback.columns if "vina" in str(c).lower() and "trả/tháng" in str(c).lower()), None)
+                            col_mo_pay = next((c for c in df_payback.columns if "mobi" in str(c).lower() and "trả/tháng" in str(c).lower()), None)
+                            col_landlord = next((c for c in df_payback.columns if "chủ nhà" in str(c).lower() and "tháng" in str(c).lower()), None)
+                            col_total_cost_real = next((c for c in df_payback.columns if "tổng chi phí thực bỏ ra" in str(c).lower()), None)
+                            col_total_cost = next((c for c in df_payback.columns if "tổng chi phí bỏ ra" in str(c).lower() and "thực" not in str(c).lower()), None)
+                            col_fb_vina = next((c for c in df_payback.columns if "feedback" in str(c).lower() and "vina" in str(c).lower()), None)
+                            col_fb_mobi = next((c for c in df_payback.columns if "feedback" in str(c).lower() and "mobi" in str(c).lower()), None)
+                            col_total_rev = next((c for c in df_payback.columns if "tổng thu/tháng" in str(c).lower() and "vat" in str(c).lower()), None)
+                            col_total_rev_after = next((c for c in df_payback.columns if "tổng thu/tháng" in str(c).lower() and "thuế" in str(c).lower()), None)
+                            col_delta = next((c for c in df_payback.columns if "delta" in str(c).lower()), None)
+                            col_payback_time = next((c for c in df_payback.columns if "hoàn vốn" in str(c).lower()), None)
+                            
+                            def safe_float(val):
+                                try:
+                                    if pd.isna(val): return 0.0
+                                    return float(val)
+                                except:
+                                    return 0.0
+                            
+                            orig_vt = safe_float(row_orig[col_vt_pay]) if col_vt_pay else 0.0
+                            orig_vi = safe_float(row_orig[col_vi_pay]) if col_vi_pay else 0.0
+                            orig_mo = safe_float(row_orig[col_mo_pay]) if col_mo_pay else 0.0
+                            orig_landlord = safe_float(row_orig[col_landlord]) if col_landlord else 0.0
+                            orig_fb_vina = safe_float(row_orig[col_fb_vina]) if col_fb_vina else 0.0
+                            orig_fb_mobi = safe_float(row_orig[col_fb_mobi]) if col_fb_mobi else 0.0
+                            orig_total_cost_real = safe_float(row_orig[col_total_cost_real]) if col_total_cost_real else 0.0
+                            
+                            # Kiểm tra trạm đã có nhà mạng chưa
+                            if tien_vina_new > 0 and orig_vi > 0:
+                                st.warning(f"⚠️ Trạm **{inp_ma_tram.strip()}** đã có nhà mạng **Vina** rồi (đang trả {orig_vi:,.0f}/tháng)!")
+                            if tien_mobi_new > 0 and orig_mo > 0:
+                                st.warning(f"⚠️ Trạm **{inp_ma_tram.strip()}** đã có nhà mạng **Mobi** rồi (đang trả {orig_mo:,.0f}/tháng)!")
+                            
+                            if tien_vina_new == 0 and tien_mobi_new == 0:
+                                st.warning("⚠️ Vui lòng nhập ít nhất 1 giá tiền nhà mạng (Vina hoặc Mobi) để mô phỏng.")
+                            else:
+                                # Đếm số nhà mạng hiện tại (gốc)
+                                orig_network_count = (1 if orig_vt > 0 else 0) + (1 if orig_vi > 0 else 0) + (1 if orig_mo > 0 else 0)
+                                
+                                # Đếm số nhà mạng MỚI được thêm vào
+                                new_add_count = 0
+                                if tien_vina_new > 0 and orig_vi == 0:
+                                    new_add_count += 1
+                                if tien_mobi_new > 0 and orig_mo == 0:
+                                    new_add_count += 1
+                                
+                                new_network_count = orig_network_count + new_add_count
+                                
+                                # Tính giá Viettel mới
+                                if new_network_count >= 3:
+                                    new_vt = orig_vt * 0.7  # Giảm 30%
+                                elif new_network_count == 2:
+                                    new_vt = orig_vt * 0.8  # Giảm 20%
+                                else:
+                                    new_vt = orig_vt
+                                
+                                new_vi = tien_vina_new if tien_vina_new > 0 else orig_vi
+                                new_mo = tien_mobi_new if tien_mobi_new > 0 else orig_mo
+                                
+                                # Chi phí feedback mới
+                                new_fb_vina = (tien_vina_new * fb_vina_months / 1.1) if tien_vina_new > 0 else orig_fb_vina
+                                new_fb_mobi = (tien_mobi_new * fb_mobi_months) if tien_mobi_new > 0 else orig_fb_mobi
+                                
+                                new_total_cost = orig_total_cost_real + new_fb_vina + new_fb_mobi
+                                new_total_rev = new_vt + new_vi + new_mo
+                                new_total_rev_after = new_total_rev / 1.1
+                                new_delta = new_total_rev_after - orig_landlord
+                                new_payback = (new_total_cost / new_delta) if new_delta != 0 else 0
+                                
+                                # Xây dựng tên mã trạm mới
+                                ma_tram_display = inp_ma_tram.strip()
+                                suffix_parts = []
+                                if tien_vina_new > 0:
+                                    suffix_parts.append("_add Vina")
+                                if tien_mobi_new > 0:
+                                    suffix_parts.append("_add Mobi")
+                                new_ma_tram = ma_tram_display + "".join(suffix_parts)
+                                
+                                # Xây dựng 2 hàng dữ liệu
+                                all_cols = df_payback.columns.tolist()
+                                display_cols = [c for c in all_cols if str(c).strip().lower() != 'stt']
+                                
+                                # HÀNG 1: Dữ liệu GỐC
+                                row1_data = {}
+                                for c in display_cols:
+                                    row1_data[c] = row_orig[c] if c in row_orig.index else ""
+                                
+                                # HÀNG 2: Dữ liệu MÔ PHỎNG
+                                row2_data = {}
+                                for c in display_cols:
+                                    row2_data[c] = row_orig[c] if c in row_orig.index else ""
+                                
+                                row2_data[ma_tram_col_t8] = new_ma_tram
+                                if col_vt_pay: row2_data[col_vt_pay] = new_vt
+                                if col_vi_pay: row2_data[col_vi_pay] = new_vi
+                                if col_mo_pay: row2_data[col_mo_pay] = new_mo
+                                if col_fb_vina: row2_data[col_fb_vina] = new_fb_vina
+                                if col_fb_mobi: row2_data[col_fb_mobi] = new_fb_mobi
+                                if col_total_cost: row2_data[col_total_cost] = new_total_cost
+                                if col_total_rev: row2_data[col_total_rev] = new_total_rev
+                                if col_total_rev_after: row2_data[col_total_rev_after] = new_total_rev_after
+                                if col_delta: row2_data[col_delta] = new_delta
+                                if col_payback_time: row2_data[col_payback_time] = new_payback
+                                
+                                df_compare = pd.DataFrame([row1_data, row2_data], columns=display_cols)
+                                
+                                # Metric cards tóm tắt
+                                orig_delta_val = safe_float(row_orig[col_delta]) if col_delta else 0.0
+                                delta_change = new_delta - orig_delta_val
+                                delta_pct = (delta_change / orig_delta_val * 100) if orig_delta_val != 0 else 0
+                                
+                                col_summary1, col_summary2, col_summary3 = st.columns(3)
+                                with col_summary1:
+                                    st.metric(label="Delta gốc (lãi ròng/tháng)", value=f"{orig_delta_val:,.0f}")
+                                with col_summary2:
+                                    st.metric(label="Delta mới (lãi ròng/tháng)", value=f"{new_delta:,.0f}", delta=f"{delta_change:+,.0f} ({delta_pct:+.1f}%)")
+                                with col_summary3:
+                                    orig_payback_val = safe_float(row_orig[col_payback_time]) if col_payback_time else 0.0
+                                    st.metric(label="Hoàn vốn mới (tháng)", value=f"{new_payback:,.2f}", delta=f"{new_payback - orig_payback_val:+,.2f} tháng", delta_color="inverse")
+                                
+                                # Chi tiết thay đổi
+                                detail_items = []
+                                if new_add_count > 0:
+                                    detail_items.append(f"Số nhà mạng: **{orig_network_count}** → **{new_network_count}**")
+                                if orig_vt != new_vt:
+                                    pct_reduce = ((orig_vt - new_vt) / orig_vt * 100) if orig_vt > 0 else 0
+                                    detail_items.append(f"Viettel trả/tháng: **{orig_vt:,.0f}** → **{new_vt:,.0f}** (giảm {pct_reduce:.0f}%)")
+                                if tien_vina_new > 0:
+                                    detail_items.append(f"Vina trả/tháng (mới): **{tien_vina_new:,.0f}** | Feedback Vina: **{new_fb_vina:,.0f}** ({fb_vina_months} tháng)")
+                                if tien_mobi_new > 0:
+                                    detail_items.append(f"Mobi trả/tháng (mới): **{tien_mobi_new:,.0f}** | Feedback Mobi: **{new_fb_mobi:,.0f}** ({fb_mobi_months} tháng)")
+                                
+                                if detail_items:
+                                    st.markdown("**📋 Chi tiết thay đổi:**")
+                                    for item in detail_items:
+                                        st.markdown(f"- {item}")
+                                
+                                st.markdown("")
+                                
+                                # ========== BẢNG LƯỚI NGANG (2 hàng) ==========
+                                st.markdown("""
+                                <style>
+                                .compare-net-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                                .compare-net-table th { background-color: #fff3e0 !important; color: #e65100 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; }
+                                .compare-net-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
+                                .compare-net-table tbody tr:first-child td { background-color: #e3f2fd !important; color: #1565c0 !important; font-weight: 700 !important; }
+                                .compare-net-table tbody tr:nth-child(2) td { background-color: #e8f5e9 !important; color: #2e7d32 !important; font-weight: 700 !important; }
+                                .compare-net-table tr:hover { background-color: #f1f1f1 !important; }
+                                </style>
+                                """, unsafe_allow_html=True)
+                                
+                                st.markdown('<h4 style="color:#e65100; font-weight:bold;">📊 Bảng Lưới Ngang: Dữ liệu Gốc vs Mô Phỏng</h4>', unsafe_allow_html=True)
+                                
+                                # Format số cho hiển thị bảng ngang
+                                df_compare_fmt = df_compare.copy()
+                                for c in display_cols:
+                                    if c == ma_tram_col_t8:
+                                        continue
+                                    df_compare_fmt[c] = pd.to_numeric(df_compare_fmt[c], errors='coerce')
+                                    if col_payback_time and str(c).lower() == str(col_payback_time).lower():
+                                        df_compare_fmt[c] = df_compare_fmt[c].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and pd.notna(x) else "-")
+                                    else:
+                                        df_compare_fmt[c] = df_compare_fmt[c].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and pd.notna(x) else "-")
+                                
+                                html_compare = df_compare_fmt.to_html(index=False, classes="compare-net-table", escape=False)
+                                st.markdown(html_compare, unsafe_allow_html=True)
+                                
+                                st.caption("💡 **Hàng 1 (xanh dương)**: Dữ liệu gốc | **Hàng 2 (xanh lá)**: Mô phỏng khi thêm nhà mạng")
+                                
+                                # ========== BẢNG DỌC (Mobile) - 2 thẻ ==========
+                                st.markdown("---")
+                                st.markdown('<h4 style="color:#e65100; font-weight:bold;">📱 Chi Tiết Dạng Cột (Xem Điện Thoại)</h4>', unsafe_allow_html=True)
+                                
+                                # Thẻ 1: Trạm gốc
+                                tram_goc_name = str(row1_data.get(ma_tram_col_t8, "Gốc"))
+                                with st.expander(f"📌 Thông tin Trạm GỐC: {tram_goc_name}", expanded=True):
+                                    for c in display_cols:
+                                        val = row1_data.get(c, "")
+                                        if pd.isna(val) or str(val).strip() == "":
+                                            val = "-"
+                                        elif isinstance(val, (int, float)) and not pd.isna(val):
+                                            if col_payback_time and str(c).lower() == str(col_payback_time).lower():
+                                                val = f"{val:,.2f}"
+                                            else:
+                                                val = f"{val:,.0f}"
+                                        st.markdown(f"**{c}:** &nbsp;&nbsp; {val}")
+                                
+                                # Thẻ 2: Trạm mô phỏng
+                                with st.expander(f"🏗️ Thông tin Trạm MÔ PHỎNG: {new_ma_tram}", expanded=True):
+                                    for c in display_cols:
+                                        val = row2_data.get(c, "")
+                                        if pd.isna(val) or str(val).strip() == "":
+                                            val = "-"
+                                        elif isinstance(val, (int, float)) and not pd.isna(val):
+                                            if col_payback_time and str(c).lower() == str(col_payback_time).lower():
+                                                val = f"{val:,.2f}"
+                                            else:
+                                                val = f"{val:,.0f}"
+                                        # Highlight cột đã thay đổi 
+                                        orig_val = row1_data.get(c, "")
+                                        is_changed = False
+                                        try:
+                                            if c != ma_tram_col_t8 and float(val.replace(',', '')) != float(str(orig_val).replace(',', '')):
+                                                is_changed = True
+                                        except:
+                                            pass
+                                        if is_changed:
+                                            st.markdown(f"<span style='color:#2e7d32; font-weight:bold;'>**{c}:** &nbsp;&nbsp; {val} ✏️</span>", unsafe_allow_html=True)
+                                        else:
+                                            st.markdown(f"**{c}:** &nbsp;&nbsp; {val}")
+
             else:
                 st.info("⚠️ Không tìm thấy sheet 'Sheet 6_time hoàn vốn' trong file dữ liệu.")
         else:
@@ -1999,3 +2272,4 @@ if not df_source.empty:
 
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
+
