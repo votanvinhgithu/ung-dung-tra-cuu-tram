@@ -2103,12 +2103,24 @@ if not df_source.empty:
                                 new_network_count = orig_network_count + new_add_count
                                 
                                 # Tính giá Viettel mới
-                                if new_network_count >= 3:
-                                    new_vt = orig_vt * 0.7  # Giảm 30%
-                                elif new_network_count == 2:
-                                    new_vt = orig_vt * 0.8  # Giảm 20%
+                                # Rule: 1 mạng = giá gốc, 2 mạng = giảm 20%, 3 mạng = giảm tổng 30% so với giá gốc 1 mạng
+                                # Lưu ý: orig_vt trong data đã phản ánh giá sau khi giảm nếu trạm đã có 2+ mạng
+                                if orig_network_count == 1:
+                                    # Giá gốc chưa giảm
+                                    if new_network_count >= 3:
+                                        new_vt = orig_vt * 0.7   # Giảm 30% so với giá gốc
+                                    elif new_network_count == 2:
+                                        new_vt = orig_vt * 0.8   # Giảm 20% so với giá gốc
+                                    else:
+                                        new_vt = orig_vt
+                                elif orig_network_count == 2:
+                                    # orig_vt đã giảm 20% rồi → cần chuyển sang mức giảm 30%
+                                    if new_network_count >= 3:
+                                        new_vt = orig_vt / 0.8 * 0.7  # Hoàn giá gốc rồi giảm 30%
+                                    else:
+                                        new_vt = orig_vt  # Đã ở mức 2 mạng
                                 else:
-                                    new_vt = orig_vt
+                                    new_vt = orig_vt  # Đã có 3 mạng, giữ nguyên
                                 
                                 new_vi = tien_vina_new if tien_vina_new > 0 else orig_vi
                                 new_mo = tien_mobi_new if tien_mobi_new > 0 else orig_mo
@@ -2180,7 +2192,12 @@ if not df_source.empty:
                                     detail_items.append(f"Số nhà mạng: **{orig_network_count}** → **{new_network_count}**")
                                 if orig_vt != new_vt:
                                     pct_reduce = ((orig_vt - new_vt) / orig_vt * 100) if orig_vt > 0 else 0
-                                    detail_items.append(f"Viettel trả/tháng: **{orig_vt:,.0f}** → **{new_vt:,.0f}** (giảm {pct_reduce:.0f}%)")
+                                    if orig_network_count == 2 and new_network_count >= 3:
+                                        detail_items.append(f"Viettel trả/tháng: **{orig_vt:,.0f}** → **{new_vt:,.0f}** (giảm thêm 10%, tổng giảm 30% so với giá gốc 1 mạng)")
+                                    elif new_network_count >= 3:
+                                        detail_items.append(f"Viettel trả/tháng: **{orig_vt:,.0f}** → **{new_vt:,.0f}** (giảm 30% so với giá gốc)")
+                                    else:
+                                        detail_items.append(f"Viettel trả/tháng: **{orig_vt:,.0f}** → **{new_vt:,.0f}** (giảm 20% so với giá gốc)")
                                 if tien_vina_new > 0:
                                     detail_items.append(f"Vina trả/tháng (mới): **{tien_vina_new:,.0f}** | Feedback Vina: **{new_fb_vina:,.0f}** ({fb_vina_months} tháng)")
                                 if tien_mobi_new > 0:
