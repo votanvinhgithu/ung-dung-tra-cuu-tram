@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import io
 import os
@@ -819,16 +819,15 @@ def render_cards(df_to_render, is_payment_tab=False):
 if not df_source.empty:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
-        "💵 DS TRẠM TT CHỦ NHÀ",
+        "📄 DS TRẠM TT CHỦ NHÀ",
         "💰 DOANH THU CÁC NHÀ MẠNG",
         "📈 BÁO CÁO LỢI NHUẬN CÔNG TY",
-        "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH",
-        "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
-        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM"
+        "🏦 CÚ PHÁP CHUYỂN KHOẢN APP NH",
+        "📉 BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
+        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM",
+        "🔍 TRA CỨU HOÀN VỐN (Sheet 6)",
+        "🧮 TÍNH THỜI GIAN HOÀN VỐN (ROI)"
     ])
-
-    # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
-    with tab1:
         with st.form(key='search_form'):
             st.markdown("### 🔍 Phễu Tra Cứu (Có bổ sung Data Sheet 2)")
             input_text = st.text_area("Dán mã trạm cần tìm (ngăn cách bởi dấu phẩy hoặc enter xuống dòng):", height=100)
@@ -1512,111 +1511,419 @@ if not df_source.empty:
                     data=out_t6.getvalue(),
                     file_name=f"Bao_Cao_LoaiTru_CaNhan_{safe_t6}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            type="primary"
-                        )
+                    type="primary"
+                )
 
     # ------------ TAB 7: BẢN ĐỒ VỊ TRÍ CÁC TRẠM ------------
     with tab7:
-        st.markdown("### 🗺️ BẢN ĐỒ VỊ TRÍ CỦA TẤT CẢ CÁC TRẠM")
-        st.info("💡 Hiển thị toàn bộ các trạm trên nền bản đồ số. Nhấn vào Icon để xem thông tin chi tiết.")
-        
+        st.markdown("### 🗺️ Bản Đồ Vị Trí Tất Cả Các Trạm")
+        st.info("📍 Bản đồ hiển thị toàn bộ các trạm theo tọa độ. Nhấn vào icon để xem thông tin chi tiết. Màu icon = số nhà mạng tại trạm.")
+
         try:
             import folium
             from streamlit_folium import st_folium
-            
+            folium_available = True
+        except ImportError:
+            folium_available = False
+
+        if not folium_available:
+            st.error("⚠️ Cần cài thêm thư viện bản đồ. Vui lòng chạy lệnh sau rồi khởi động lại app:")
+            st.code("pip install folium streamlit-folium", language="bash")
+        else:
+            # --- CHUẨN BỊ DỮ LIỆU ---
             df_map = df_source.copy()
-            long_col, lat_col = None, None
+
+            # Tìm cột long/lat theo tên linh hoạt
+            long_col = None
+            lat_col = None
             for c in df_map.columns:
-                if "long" in str(c).lower(): long_col = c
-                if "lat" in str(c).lower(): lat_col = c
-            
-            if long_col and lat_col:
+                c_low = str(c).strip().lower()
+                if "long" in c_low and long_col is None:
+                    long_col = c
+                if "lat" in c_low and lat_col is None:
+                    lat_col = c
+
+            if long_col is None or lat_col is None:
+                st.warning("⚠️ Không tìm thấy cột tọa độ (long/lat) trong dữ liệu. Kiểm tra lại tên cột trong file Excel.")
+            else:
+                # --- HÀM XÁC ĐỊNH SỐ NHÀ MẠNG ---
+                def detect_providers(row):
+                    """
+                    Viettel: chứa macro/rru/smc => có; Vina/Mobi: chứa 'có' nhưng không có 'không' => có
+                    Trả về: (count, [list tên nhà mạng])
+                    """
+                    providers = []
+                    viettel_val = str(row.get("Viettel", "")).strip().lower()
+                    if any(kw in viettel_val for kw in ["macro", "rru", "smc"]):
+                        providers.append("Viettel")
+                    vina_val = str(row.get("Vina", "")).strip().lower()
+                    if "có" in vina_val and "không" not in vina_val:
+                        providers.append("Vina")
+                    mobi_val = str(row.get("Mobi", "")).strip().lower()
+                    if "có" in mobi_val and "không" not in mobi_val:
+                        providers.append("Mobi")
+                    return len(providers), providers
+
+                # Tính số nhà mạng cho mỗi trạm
+                provider_results = df_map.apply(lambda r: pd.Series(detect_providers(r)), axis=1)
+                df_map["__provider_count__"] = provider_results[0]
+                df_map["__providers__"] = provider_results[1]
+
+                # Chuyển đổi tọa độ và lọc hàng hợp lệ
                 df_map[long_col] = pd.to_numeric(df_map[long_col], errors='coerce')
-                df_map[lat_col] = pd.to_numeric(df_map[lat_col], errors='coerce')
-                df_map = df_map.dropna(subset=[long_col, lat_col])
-                
-                if not df_map.empty:
-                    center_lat, center_lon = df_map[lat_col].mean(), df_map[long_col].mean()
-                    m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
-                    for _, row in df_map.iterrows():
-                        popup_txt = f"<b>Mã trạm:</b> {row.get('Mã trạm', row.get('Ma Tram', '-'))}<br><b>Địa chỉ:</b> {row.get('Địa Chỉ', '-')}"
-                        folium.Marker(
-                            location=[row[lat_col], row[long_col]],
-                            popup=folium.Popup(popup_txt, max_width=300),
-                            tooltip=str(row.get('Mã trạm', 'Trạm'))
+                df_map[lat_col]  = pd.to_numeric(df_map[lat_col], errors='coerce')
+                df_map_valid = df_map.dropna(subset=[long_col, lat_col]).copy()
+                df_map_valid = df_map_valid[
+                    (df_map_valid[lat_col].between(-90, 90)) &
+                    (df_map_valid[long_col].between(-180, 180))
+                ]
+
+                total_on_map = len(df_map_valid)
+
+                # --- BẢNG ĐIỀU KHIỂN: SEARCH + FILTER ---
+                ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([3, 2, 1])
+                with ctrl_col1:
+                    search_ma_tram_map = st.text_input(
+                        "🔍 Tìm kiếm mã trạm trên bản đồ:",
+                        placeholder="Nhập mã trạm rồi Enter...",
+                        key="map_search_input"
+                    )
+                with ctrl_col2:
+                    filter_provider_count = st.selectbox(
+                        "📡 Lọc theo số nhà mạng:",
+                        options=["🌐 Tất cả trạm", "🔴 Trạm 1 nhà mạng", "🟢 Trạm 2 nhà mạng", "🟣 Trạm 3 nhà mạng"],
+                        index=0,
+                        key="map_filter_providers"
+                    )
+                with ctrl_col3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.button("🗺️ Áp dụng", use_container_width=True, key="map_apply_btn")
+
+                # --- ÁP DỤNG FILTER SỐ NHÀ MẠNG ---
+                if "1 nhà mạng" in filter_provider_count:
+                    df_map_filtered = df_map_valid[df_map_valid["__provider_count__"] == 1].copy()
+                elif "2 nhà mạng" in filter_provider_count:
+                    df_map_filtered = df_map_valid[df_map_valid["__provider_count__"] == 2].copy()
+                elif "3 nhà mạng" in filter_provider_count:
+                    df_map_filtered = df_map_valid[df_map_valid["__provider_count__"] == 3].copy()
+                else:
+                    df_map_filtered = df_map_valid.copy()
+
+                filtered_count = len(df_map_filtered)
+
+                # --- THỐNG KÊ 4 METRIC ---
+                cnt1 = int((df_map_valid["__provider_count__"] == 1).sum())
+                cnt2 = int((df_map_valid["__provider_count__"] == 2).sum())
+                cnt3 = int((df_map_valid["__provider_count__"] == 3).sum())
+                stat_c1, stat_c2, stat_c3, stat_c4 = st.columns(4)
+                stat_c1.metric("📍 Tổng trạm có tọa độ", f"{total_on_map} trạm")
+                stat_c2.metric("🔴 Trạm 1 nhà mạng", f"{cnt1} trạm")
+                stat_c3.metric("🟢 Trạm 2 nhà mạng", f"{cnt2} trạm")
+                stat_c4.metric("🟣 Trạm 3 nhà mạng", f"{cnt3} trạm")
+
+                # --- LEGEND MÀU ---
+                st.markdown("""
+                <div style='display:flex;gap:20px;align-items:center;padding:8px 14px;
+                            background:#f8f9fa;border-radius:8px;margin:6px 0;
+                            border:1px solid #e0e0e0;flex-wrap:wrap;'>
+                    <span style='font-weight:bold;font-size:13px;'>Chú thích màu:</span>
+                    <span style='display:flex;align-items:center;gap:5px;'>
+                        <span style='background:#e53935;width:13px;height:13px;border-radius:50%;display:inline-block;'></span>
+                        <b style='color:#e53935;font-size:13px;'>Đỏ</b>
+                        <span style='font-size:12px;'>= 1 nhà mạng</span>
+                    </span>
+                    <span style='display:flex;align-items:center;gap:5px;'>
+                        <span style='background:#2e7d32;width:13px;height:13px;border-radius:50%;display:inline-block;'></span>
+                        <b style='color:#2e7d32;font-size:13px;'>Xanh lá</b>
+                        <span style='font-size:12px;'>= 2 nhà mạng</span>
+                    </span>
+                    <span style='display:flex;align-items:center;gap:5px;'>
+                        <span style='background:#6a1b9a;width:13px;height:13px;border-radius:50%;display:inline-block;'></span>
+                        <b style='color:#6a1b9a;font-size:13px;'>Tím</b>
+                        <span style='font-size:12px;'>= 3 nhà mạng</span>
+                    </span>
+                    <span style='display:flex;align-items:center;gap:5px;'>
+                        <span style='background:#FFD700;width:13px;height:13px;border-radius:50%;border:2px solid #888;display:inline-block;'></span>
+                        <span style='font-size:12px;'>Vòng vàng = trạm đang search</span>
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # --- XÁC ĐỊNH TÂM BẢN ĐỒ & SEARCH ---
+                center_lat = df_map_valid[lat_col].mean()
+                center_lon = df_map_valid[long_col].mean()
+                zoom_start = 7
+                found_station = None
+
+                if search_ma_tram_map.strip():
+                    search_key = search_ma_tram_map.strip().lower()
+                    match_rows = df_map_valid[
+                        df_map_valid["mã trạm"].astype(str).str.strip().str.lower() == search_key
+                    ]
+                    if not match_rows.empty:
+                        found_station = match_rows.iloc[0]
+                        center_lat = float(found_station[lat_col])
+                        center_lon = float(found_station[long_col])
+                        zoom_start = 15
+
+                        # Thông tin nhà mạng của trạm tìm được
+                        f_count, f_providers = detect_providers(found_station)
+                        p_label = " | ".join(f_providers) if f_providers else "Không xác định"
+                        pcolor_map = {0: "#9e9e9e", 1: "#e53935", 2: "#2e7d32", 3: "#6a1b9a"}
+                        p_color = pcolor_map.get(f_count, "#9e9e9e")
+
+                        # Badge từng nhà mạng
+                        badge_colors = {"Viettel": "#e53935", "Vina": "#1565c0", "Mobi": "#e65100"}
+                        nm_badges = "".join([
+                            f"<span style='background:{badge_colors.get(p,'#555')};color:white;"
+                            f"padding:2px 10px;border-radius:10px;font-size:12px;"
+                            f"font-weight:bold;margin-right:5px;'>{p}</span>"
+                            for p in f_providers
+                        ]) or "<span style='color:#999;'>Chưa có nhà mạng</span>"
+
+                        st.markdown(f"""
+                        <div style='background:linear-gradient(135deg,#e8f5e9,#f3e5f5);
+                                    border-left:5px solid {p_color};border-radius:8px;
+                                    padding:12px 18px;margin:8px 0;'>
+                            <div style='font-size:16px;font-weight:bold;color:{p_color};margin-bottom:8px;'>
+                                🎯 Tìm thấy trạm: {found_station['mã trạm']}
+                            </div>
+                            <div style='display:flex;gap:24px;flex-wrap:wrap;align-items:center;font-size:13px;'>
+                                <span>📌 <b>Tọa độ:</b> {center_lat:.6f}, {center_lon:.6f}</span>
+                                <span>📶 <b>Số nhà mạng:</b>
+                                    <span style='background:{p_color};color:white;padding:1px 10px;
+                                                border-radius:12px;font-weight:bold;margin-left:4px;'>
+                                        {f_count} nhà mạng
+                                    </span>
+                                </span>
+                                <span>🏢 <b>Nhà mạng:</b> {nm_badges}</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.warning(f"❌ Không tìm thấy mã trạm **'{search_ma_tram_map.strip()}'** trong dữ liệu.")
+
+                # Thông báo số trạm sau filter
+                if filtered_count < total_on_map:
+                    st.info(f"🔽 Đang hiển thị **{filtered_count}** trạm (lọc: {filter_provider_count})")
+                else:
+                    st.success(f"✅ Hiển thị tất cả **{total_on_map}** trạm có tọa độ.")
+
+                # --- TẠO BẢN ĐỒ FOLIUM ---
+                m = folium.Map(
+                    location=[center_lat, center_lon],
+                    zoom_start=zoom_start,
+                    tiles="OpenStreetMap"
+                )
+                folium.TileLayer(
+                    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                    attr="Esri",
+                    name="🛰️ Vệ Tinh (Esri)",
+                    overlay=False,
+                    control=True
+                ).add_to(m)
+                folium.TileLayer(
+                    tiles="OpenStreetMap",
+                    name="🗺️ Bản Đồ Đường (OSM)",
+                    overlay=False,
+                    control=True
+                ).add_to(m)
+                folium.LayerControl(position="topright").add_to(m)
+
+                # --- MÀU ICON THEO SỐ NHÀ MẠNG ---
+                icon_color_map = {0: "#9e9e9e", 1: "#e53935", 2: "#2e7d32", 3: "#6a1b9a"}
+
+                # --- CỘT POPUP ---
+                display_cols_for_popup = [
+                    c for c in DISPLAY_COLUMNS
+                    if c in df_map_filtered.columns and c not in ["__raw_amount__", "__is_due_this_month__"]
+                ]
+
+                # --- VẼ MARKER ---
+                for _, row_m in df_map_filtered.iterrows():
+                    ma_tram_val = str(row_m.get("mã trạm", "")).strip()
+                    lat_val = float(row_m[lat_col])
+                    lon_val = float(row_m[long_col])
+
+                    p_count, p_list = detect_providers(row_m)
+                    icon_color = icon_color_map.get(p_count, "#9e9e9e")
+                    p_names = " | ".join(p_list) if p_list else "Không có"
+
+                    # Badge nhà mạng trong popup
+                    badge_colors = {"Viettel": "#e53935", "Vina": "#1565c0", "Mobi": "#e65100"}
+                    nm_badge_html = "".join([
+                        f"<span style='background:{badge_colors.get(pn,'#555')};color:white;"
+                        f"padding:2px 8px;border-radius:10px;font-size:11px;"
+                        f"font-weight:bold;margin-right:4px;'>{pn}</span>"
+                        for pn in p_list
+                    ]) or "<span style='color:#999;font-size:11px;'>Chưa có nhà mạng</span>"
+
+                    # Popup HTML
+                    popup_rows_html = ""
+                    for col_p in display_cols_for_popup:
+                        val_p = row_m.get(col_p, "-")
+                        if pd.isna(val_p) or str(val_p).strip() == "": val_p = "-"
+                        color_style = "color:#1565c0;" if col_p in EXTRA_PAY_COLS else "color:#333;"
+                        popup_rows_html += (
+                            f"<tr>"
+                            f"<td style='font-weight:bold;white-space:nowrap;padding:4px 8px;"
+                            f"border-bottom:1px solid #eee;font-size:12px;{color_style}'>{col_p}</td>"
+                            f"<td style='padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;'>{val_p}</td>"
+                            f"</tr>"
+                        )
+
+                    popup_html = (
+                        f"<div style='min-width:320px;max-width:440px;max-height:480px;"
+                        f"overflow-y:auto;font-family:Arial,sans-serif;'>"
+                        f"<div style='background:{icon_color};color:white;padding:8px 12px;"
+                        f"border-radius:6px 6px 0 0;font-weight:bold;font-size:14px;'>"
+                        f"📡 Trạm: {ma_tram_val}</div>"
+                        f"<div style='background:#f5f5f5;padding:6px 12px;"
+                        f"border-bottom:2px solid {icon_color};'>"
+                        f"<span style='font-size:12px;font-weight:bold;color:#555;margin-right:6px;'>📶 Nhà mạng:</span>"
+                        f"{nm_badge_html}</div>"
+                        f"<table style='width:100%;border-collapse:collapse;background:white;'>"
+                        f"{popup_rows_html}</table></div>"
+                    )
+
+                    # DivIcon màu động
+                    icon = folium.DivIcon(
+                        html=(
+                            f"<div style='width:100px;display:flex;flex-direction:column;align-items:center;'>"
+                            f"<div style='background:{icon_color};color:white;font-size:10px;"
+                            f"font-weight:bold;padding:2px 6px;border-radius:4px;white-space:nowrap;"
+                            f"box-shadow:0 1px 4px rgba(0,0,0,0.45);margin-bottom:2px;"
+                            f"line-height:16px;'>{ma_tram_val}</div>"
+                            f"<svg width='18' height='24' viewBox='0 0 18 24' xmlns='http://www.w3.org/2000/svg'>"
+                            f"<path d='M9 0C5.13 0 2 3.13 2 7c0 5.25 7 17 7 17s7-11.75 7-17c0-3.87-3.13-7-7-7z'"
+                            f" fill='{icon_color}'/>"
+                            f"<circle cx='9' cy='7' r='3' fill='white'/></svg></div>"
+                        ),
+                        icon_size=(100, 44),
+                        icon_anchor=(50, 44)
+                    )
+
+                    # Vòng vàng cho trạm search
+                    if found_station is not None and ma_tram_val.lower() == search_ma_tram_map.strip().lower():
+                        folium.CircleMarker(
+                            location=[lat_val, lon_val],
+                            radius=26,
+                            color="#FFD700",
+                            fill=True,
+                            fill_color="#FFD700",
+                            fill_opacity=0.3,
+                            weight=4
                         ).add_to(m)
-                    st_folium(m, width="100%", height=600)
-                else: st.warning("💡 Không tìm thấy tọa độ hợp lệ.")
-            else: st.warning("💡 Dữ liệu cần có Kinh độ/Vĩ độ để hiển thị bản đồ.")
-        except Exception as e: st.error(f"❌ Lỗi bản đồ: {e}")
+
+                    folium.Marker(
+                        location=[lat_val, lon_val],
+                        popup=folium.Popup(popup_html, max_width=460),
+                        tooltip=f"📡 {ma_tram_val}  |  📶 {p_names}",
+                        icon=icon
+                    ).add_to(m)
+
+                # --- HIỂN THỊ BẢN ĐỒ ---
+                st.markdown("**💡 Ghi chú:** Nhấn icon để xem chi tiết. Hover để xem nhanh nhà mạng. Nút góc phải để đổi lớp bản đồ.")
+                st_folium(m, use_container_width=True, height=650, returned_objects=[])
+
+                # --- BẢNG DANH SÁCH TRẠM ---
+                with st.expander(f"📋 Xem danh sách {filtered_count} trạm đang hiển thị trên bản đồ"):
+                    cols_show = ["mã trạm", lat_col, long_col, "Địa chỉ", "Viettel", "Vina", "Mobi", "Chủ nhà + SĐT"]
+                    existing_show = [c for c in cols_show if c in df_map_filtered.columns]
+                    df_map_show = df_map_filtered[existing_show].copy()
+                    df_map_show.insert(1, "Số NM", df_map_filtered["__provider_count__"].values)
+                    df_map_show.insert(2, "Nhà Mạng", df_map_filtered["__providers__"].apply(
+                        lambda x: " | ".join(x) if x else "Không có"
+                    ).values)
+                    df_map_show.insert(0, "STT", range(1, len(df_map_show) + 1))
+                    st.markdown("""
+                    <style>
+                    .map-table { width:100%;border-collapse:collapse;font-family:"Source Sans Pro",sans-serif; }
+                    .map-table th { background:#ffeaea!important;color:#ff0000!important;font-weight:900!important;border:1px solid #e0e0e0;padding:8px;font-size:14px; }
+                    .map-table td { border:1px solid #e0e0e0;padding:6px 8px;font-size:13px; }
+                    .map-table tr:nth-child(even) { background:#f9f9f9; }
+                    .map-table tr:hover { background:#f1f1f1; }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    st.markdown(df_map_show.to_html(index=False, classes="map-table", escape=False), unsafe_allow_html=True)
+
 
     # ------------ TAB 8: TRA CỨU CHI TIẾT HOÀN VỐN (SHEET 6) ------------
     with tab8:
-        st.markdown("### 🔍 TRA CỨU CHI TIẾT HOÀN VỐN (Sheet 6)")
-        st.info("💡 Tìm kiếm thông chi tiết từ Sheet 6 dựa trên mã trạm.")
-        with st.form(key='hoan_von_search'):
-            ma_t8 = st.text_input("📝 Nhập mã trạm (HCM001, HCM002...):")
-            if st.form_submit_button("🔍 TÌM KIẾM", use_container_width=True):
-                f_t8 = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
-                if f_t8:
-                    try:
-                        if hasattr(f_t8, 'seek'): f_t8.seek(0)
-                        xl = pd.ExcelFile(f_t8); s6 = next((s for s in xl.sheet_names if '6' in s or 'vốn' in s.lower()), None)
-                        if s6:
-                            df6 = pd.read_excel(f_t8, sheet_name=s6)
-                            res = df6[df6.iloc[:,2].astype(str).str.contains(ma_t8.strip(), case=False)] if ma_t8 else df6
-                            if not res.empty:
-                                st.success(f"✅ Tìm thấy {len(res)} trạm.")
-                                st.dataframe(res, hide_index=True)
-                                for _, r in res.head(10).iterrows():
-                                    with st.expander(f"📌 {r.iloc[2]}", expanded=False):
-                                        for c in res.columns: st.write(f"**{c}:** {r[c]}")
-                            else: st.warning("🔍 Không thấy kết quả.")
-                        else: st.error("❌ Không thấy Sheet 6.")
-                    except Exception as e: st.error(f"❌ Lỗi: {e}")
+        st.markdown("### 🔍 TRA CỨU THỜI GIAN HOÀN VỐN (Sheet 6)")
+        st.info("💡 Hệ thống tự động tìm kiếm thông tin hoàn vốn từ Sheet 6 dựa trên Mã Trạm.")
+
+        with st.form(key='hoan_von_search_form'):
+            ma_t8 = st.text_input("📝 Nhập mã trạm (Hỗ trợ nhiều mã cách nhau bằng dấu phẩy):", placeholder="Ví dụ: HCM001, HCM002")
+            submit_t8 = st.form_submit_button(label="🔍 TÌM KIẾM DỮ LIỆU", use_container_width=True)
+
+        if submit_t8:
+            f_src_t8 = DEFAULT_FILE if DEFAULT_FILE else (uploaded_file if 'uploaded_file' in dir() else None)
+            if f_src_t8:
+                try:
+                    if hasattr(f_src_t8, 'seek'): f_src_t8.seek(0)
+                    xl = pd.ExcelFile(f_src_t8)
+                    s6 = next((s for s in xl.sheet_names if '6' in s or 'vốn' in s.lower()), None)
+                    if s6:
+                        if hasattr(f_src_t8, 'seek'): f_src_t8.seek(0)
+                        df6_t8 = pd.read_excel(f_src_t8, sheet_name=s6)
+                        m_col = df6_t8.columns[2] if len(df6_t8.columns) > 2 else df6_t8.columns[0]
+                        if ma_t8.strip():
+                            keys = [k.strip().lower() for k in ma_t8.replace(',', '\n').split('\n') if k.strip()]
+                            res_t8 = df6_t8[df6_t8[m_col].astype(str).str.strip().str.lower().isin(keys)].copy()
+                        else: res_t8 = df6_t8.copy()
+                        
+                        if not res_t8.empty:
+                            st.success(f"✅ Tìm thấy {len(res_t8)} bản ghi.")
+                            st.dataframe(res_t8, hide_index=True)
+                            for _, r in res_t8.head(15).iterrows():
+                                with st.expander(f"📌 {r[m_col]}", expanded=False):
+                                    for c in res_t8.columns: st.write(f"**{c}:** {r[c]}")
+                        else: st.warning("🔍 Không tìm thấy dữ liệu.")
+                    else: st.error("❌ Không thấy Sheet 6.")
+                except Exception as e: st.error(f"❌ Lỗi: {e}")
 
     # ------------ TAB 9: TÍNH THỜI GIAN HOÀN VỐN (ROI) ------------
     with tab9:
         st.markdown("### 🧮 CÔNG CỤ TÍNH THỜI GIAN HOÀN VỐN (ROI)")
-        def parse_num(val):
-            try: return float(str(val).replace(',', '')) if val and not pd.isna(val) else 0.0
+        def parse_roi(v):
+            try: return float(str(v).replace(',', '')) if v and not pd.isna(v) else 0.0
             except: return 0.0
-        
+            
         f_t9 = DEFAULT_FILE if DEFAULT_FILE else (uploaded_file if 'uploaded_file' in dir() else None)
-        col1, col2 = st.columns([3,1])
-        with col1: ma_tr = st.text_input("📍 Nhập Mã Trạm tự động điền:", key="roi_ma")
-        with col2:
+        c1_t9, c2_t9 = st.columns([3,1])
+        with c1_t9: ma_roi = st.text_input("📍 Mã Trạm (Tự điền):", key="roi_ma_t9")
+        with c2_t9:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🚀 Lấy giá trị", use_container_width=True):
-                if f_t9 and ma_tr.strip():
+            if st.button("🚀 Lấy giá trị"):
+                if f_t9 and ma_roi.strip():
                     try:
                         xl = pd.ExcelFile(f_t9); s6 = next((s for s in xl.sheet_names if 'sheet 6' in s.lower()), None)
                         tcp = 0.0
                         if s6:
                             df6 = pd.read_excel(f_t9, sheet_name=s6)
-                            match = df6[df6.iloc[:,2].astype(str).str.strip().str.lower() == ma_tr.strip().lower()]
-                            if not match.empty: tcp = parse_num(next((v for k,v in match.iloc[0].to_dict().items() if 'sau vat' in str(k).lower()), 0))
-                        st.session_state['roi_v'] = {'tcp': tcp, 'ma': ma_tr.strip()}
-                        st.toast(f"✅ Đã nạp dữ liệu trạm {ma_tr}")
+                            m = df6[df6.iloc[:,2].astype(str).str.strip().str.lower() == ma_roi.strip().lower()]
+                            if not m.empty: tcp = parse_roi(next((v for k,v in m.iloc[0].to_dict().items() if 'sau vat' in str(k).lower()), 0))
+                        st.session_state['roi_v'] = {'tcp': tcp, 'ma': ma_roi.strip()}
+                        st.success(f"✅ Đã nạp!")
                     except: pass
 
         st.markdown("---")
-        roi_v = st.session_state.get('roi_v', {})
-        cA, cB = st.columns(2)
-        with cA:
+        rv = st.session_state.get('roi_v', {})
+        cha, chb = st.columns(2)
+        with cha:
             st.subheader("💰 ĐẦU TƯ")
-            tcp_i = st.number_input("Tổng vốn đầu tư (VAT):", value=float(roi_v.get('tcp', 0.0)), step=1000000.0, format="%.0f")
-            lai_v = tcp_i * 0.12 / 12 * 24 if tcp_i > 0 else 0.0
-            st.write(f"*Ước tính lãi vay (12%/24th): {lai_v:,.0f} VNĐ*")
-            total_i = tcp_i + lai_v
-            st.warning(f"### TỔNG CHI PHÍ: {total_i:,.0f} VNĐ")
-        with cB:
-            st.subheader("📊 DOANH THU")
-            rev_mo = st.number_input("Tổng doanh thu ròng/tháng (Sau thuế & thuê):", value=5000000.0, step=100000.0, format="%.0f")
-            if rev_mo > 0:
-                months = total_i / rev_mo
-                st.success(f"## HOÀN VỐN: **{months:.1f} THÁNG**")
-                st.progress(min(months/60, 1.0))
-            else: st.error("⚠️ Lợi nhuận phải > 0.")
+            tcp_in = st.number_input("Tổng vốn (VAT):", value=float(rv.get('tcp', 0.0)), step=1000000.0, format="%.0f")
+            li_v = tcp_in * 0.12 / 12 * 24 if tcp_in > 0 else 0.0
+            st.write(f"Ước tính lãi vay (12%/24th): **{li_v:,.0f}**")
+            total_in = tcp_in + li_v
+            st.warning(f"### TỔNG CHI PHÍ: {total_in:,.0f}")
+        with chb:
+            st.subheader("📊 LỢI NHUẬN")
+            p_mo = st.number_input("Lợi nhuận/tháng:", value=5000000.0, step=100000.0, format="%.0f")
+            if p_mo > 0:
+                mos = total_in / p_mo
+                st.success(f"## HOÀN VỐN: **{mos:.1f} THÁNG**")
+                st.progress(min(mos/60, 1.0))
 else:
-    st.info("💡 Vui lòng kiểm tra kết nối CSDL hoặc Upload file excel.")
+    st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
