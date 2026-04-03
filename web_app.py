@@ -769,6 +769,44 @@ def load_data_and_enrich_v3(file_source, target_month_str):
         st.error(f"⚠️ Có lỗi trong quá trình đọc Excel: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=60)
+def load_payback_data(file_source):
+    try:
+        if hasattr(file_source, 'seek'):
+            file_source.seek(0)
+        xl = pd.ExcelFile(file_source)
+        sheet_target = "Sheet 6_time hoàn vốn"
+        actual_sheet = next((s for s in xl.sheet_names if sheet_target.lower() in s.lower()), None)
+        if not actual_sheet:
+            return pd.DataFrame()
+        
+        df = pd.read_excel(file_source, sheet_name=actual_sheet)
+        if df.empty:
+            return pd.DataFrame()
+            
+        # Loại bỏ dòng Tổng cộng và dòng filter nếu có (Dòng 0 và 1 trong file mẫu)
+        df_clean = df.copy()
+        # Tìm cột Mã trạm linh hoạt
+        ma_tram_col = next((c for c in df_clean.columns if "mã trạm" in str(c).lower()), None)
+        if not ma_tram_col:
+            return pd.DataFrame()
+            
+        df_clean = df_clean[df_clean[ma_tram_col].notna()]
+        df_clean = df_clean[~df_clean[ma_tram_col].astype(str).str.strip().str.lower().isin(["tổng cộng", "filter", "nan", "null"])]
+        
+        # Chỉ giữ lại từ cột "Mã trạm" trở đi
+        cols = df_clean.columns.tolist()
+        try:
+            start_idx = next(i for i, c in enumerate(cols) if str(c).strip().lower() == str(ma_tram_col).lower())
+            df_clean = df_clean.iloc[:, start_idx:]
+        except StopIteration:
+            pass
+            
+        df_clean.reset_index(drop=True, inplace=True)
+        return df_clean
+    except Exception:
+        return pd.DataFrame()
+
 # --- SIDEBAR VÀ NHÚNG DATA ---
 st.sidebar.header("📁 Dữ Liệu Báo Cáo")
 
@@ -793,7 +831,10 @@ else:
         df_source = load_data_and_enrich_v3(uploaded_file, current_mm_yyyy)
 
 # Khu vực hiển thị kết quả Thẻ Bài
-def render_cards(df_to_render, is_payment_tab=False):
+def render_cards(df_to_render, is_payment_tab=False, columns_to_show=None):
+    if columns_to_show is None:
+        columns_to_show = DISPLAY_COLUMNS
+        
     if len(df_to_render) > 50:
         st.warning(f"⚠️ Ứng dụng hiển thị mượt dạng thẻ dọc cho 50 trạm đầu tiên để chống đứng máy. Anh/chị xem toàn bộ danh sách ở Bảng Tổng Hợp bên dưới.")
         display_cards = df_to_render.head(50)
@@ -801,30 +842,40 @@ def render_cards(df_to_render, is_payment_tab=False):
         display_cards = df_to_render
         
     for index, row in display_cards.iterrows():
-        tram_id = str(row["mã trạm"]) if pd.notna(row["mã trạm"]) and str(row["mã trạm"]) != "" else "Không Mẫu"
+        # Tìm cột mã trạm linh hoạt
+        ma_tram_col = "mã trạm"
+        if "mã trạm" not in row and "Mã trạm" in row:
+            ma_tram_col = "Mã trạm"
+            
+        tram_id = str(row[ma_tram_col]) if ma_tram_col in row and pd.notna(row[ma_tram_col]) and str(row[ma_tram_col]) != "" else "Không Mẫu"
         # Thẻ màu khác nhau nếu là có thanh toán
         title = f"💰 Thanh toán Trạm: {tram_id}" if is_payment_tab else f"📌 Thông tin Trạm: {tram_id}"
         
         with st.expander(title, expanded=True):
-            for col in DISPLAY_COLUMNS:
+            for col in columns_to_show:
+                if col not in row: continue
                 val = row[col]
                 # High-light các cột thanh toán
                 if col in EXTRA_PAY_COLS:
                     st.markdown(f"<span style='color:#a8d1ff;'>**{col}:** &nbsp;&nbsp; {val}</span>", unsafe_allow_html=True)
                 else:
                     if pd.isna(val) or str(val).strip() == "": val = "-"
+                    # Định dạng số tiền nếu là kiểu số
+                    if isinstance(val, (int, float)) and not pd.isna(val):
+                        val = f"{val:,.0f}"
                     st.markdown(f"**{col}:** &nbsp;&nbsp; {val}") 
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
         "💵 DS TRẠM TT CHỦ NHÀ",
         "💰 DOANH THU CÁC NHÀ MẠNG",
         "📈 BÁO CÁO LỢI NHUẬN CÔNG TY",
         "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH",
         "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
-        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM"
+        "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM",
+        "⌛ SEARCH HOÀN VỐN"
     ])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
@@ -1847,6 +1898,71 @@ if not df_source.empty:
                     </style>
                     """, unsafe_allow_html=True)
                     st.markdown(df_map_show.to_html(index=False, classes="map-table", escape=False), unsafe_allow_html=True)
+
+    # ------------ TAB 8: TRA CỨU HOÀN VỐN (SHEET 6) ------------
+    with tab8:
+        st.markdown("### ⌛ Tra cứu Thời gian Hoàn vốn (Sheet 6)")
+        f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+        if f_source:
+            df_payback = load_payback_data(f_source)
+            if not df_payback.empty:
+                # Ô textbox cho gõ 1 mã trạm hoặc nhiều mã trạm
+                search_query_t8 = st.text_area("🔍 Nhập mã trạm cần tra cứu (cách nhau bởi dấu phẩy hoặc xuống dòng):", height=100, key="query_t8")
+                
+                # Tìm cột mã trạm linh hoạt
+                ma_tram_col_t8 = next((c for c in df_payback.columns if "mã trạm" in str(c).lower()), "Mã trạm")
+                
+                df_filtered_t8 = df_payback.copy()
+                if search_query_t8.strip():
+                    codes_t8 = [c.strip().lower() for c in search_query_t8.replace(',', '\n').split('\n') if c.strip()]
+                    if codes_t8:
+                        df_filtered_t8 = df_filtered_t8[df_filtered_t8[ma_tram_col_t8].astype(str).str.strip().str.lower().isin(codes_t8)]
+                
+                if df_filtered_t8.empty:
+                    st.warning("⚠️ Không tìm thấy dữ liệu cho mã trạm yêu cầu.")
+                else:
+                    # Tính hàng tổng cộng
+                    num_cols_t8 = df_filtered_t8.select_dtypes(include=['number']).columns.tolist()
+                    sum_data_t8 = {}
+                    for col in df_filtered_t8.columns:
+                        if str(col).lower() == str(ma_tram_col_t8).lower():
+                            sum_data_t8[col] = "TỔNG CỘNG"
+                        elif col in num_cols_t8:
+                            sum_data_t8[col] = df_filtered_t8[col].sum()
+                        else:
+                            sum_data_t8[col] = ""
+                    
+                    df_sum_t8 = pd.DataFrame([sum_data_t8])
+                    df_display_t8 = pd.concat([df_sum_t8, df_filtered_t8], ignore_index=True)
+                    
+                    # Style cho bảng 1 (Lưới hàng ngang, hàng tổng màu xanh đậm)
+                    st.markdown("""
+                    <style>
+                    .blue-header-tab8 { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+                    .blue-header-tab8 th { background-color: #eaf2ff !important; color: #004085 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 14px; }
+                    .blue-header-tab8 td { border: 1px solid #e0e0e0; padding: 8px; font-size: 13px; }
+                    .blue-header-tab8 tr:nth-child(even) { background-color: #f9f9f9; }
+                    .blue-header-tab8 tr:hover { background-color: #f1f1f1; }
+                    .blue-header-tab8 tbody tr:first-child td { color: #004085 !important; font-weight: 900 !important; font-size: 14px !important; background-color: #eaf2ff !important; }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    # Bảng 1: Lưới hàng ngang
+                    df_table1_t8 = df_display_t8.copy()
+                    for col in num_cols_t8:
+                        df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
+                    
+                    st.markdown('<h4 style="color:#004085; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Hàng Ngang</h4>', unsafe_allow_html=True)
+                    st.markdown(df_table1_t8.to_html(index=False, classes="blue-header-tab8", escape=False), unsafe_allow_html=True)
+                    
+                    # Bảng 2: Cột dọc (Mobile)
+                    st.markdown("---")
+                    st.markdown('<h4 style="color:#004085; font-weight:bold;">📱 Bảng 2: Chi Tiết Dạng Cột (Xem Điện Thoại)</h4>', unsafe_allow_html=True)
+                    render_cards(df_filtered_t8, is_payment_tab=False, columns_to_show=df_filtered_t8.columns.tolist())
+            else:
+                st.info("⚠️ Không tìm thấy sheet 'Sheet 6_time hoàn vốn' trong file dữ liệu.")
+        else:
+            st.warning("⚠️ Vui lòng kết nối dữ liệu để sử dụng tính năng này.")
 
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
