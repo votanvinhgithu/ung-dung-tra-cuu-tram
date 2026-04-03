@@ -1933,6 +1933,16 @@ if not df_source.empty:
                             # Ép về số, lỗi thì để NaN
                             df_filtered_t8[col] = pd.to_numeric(df_filtered_t8[col], errors='coerce')
 
+                    # Tên cột đặc thù theo logic anh yêu cầu
+                    col_cost = "Tổng chi phí bỏ ra"
+                    col_delta = "Delta, lãi ròng/tháng"
+                    col_payback = "Thời gian (tháng) hoàn vốn"
+                    
+                    # Tìm tên cột thực tế linh hoạt
+                    actual_cost_col = next((c for c in df_filtered_t8.columns if col_cost.lower() in str(c).lower()), None)
+                    actual_delta_col = next((c for c in df_filtered_t8.columns if col_delta.lower() in str(c).lower()), None)
+                    actual_payback_col = next((c for c in df_filtered_t8.columns if col_payback.lower() in str(c).lower()), None)
+
                     # Tính hàng tổng cộng
                     num_cols_t8 = df_filtered_t8.select_dtypes(include=['number']).columns.tolist()
                     sum_data_t8 = {}
@@ -1940,7 +1950,13 @@ if not df_source.empty:
                         if str(col).lower() == str(ma_tram_col_t8).lower():
                             sum_data_t8[col] = "TỔNG CỘNG"
                         elif col in num_cols_t8:
-                            sum_data_t8[col] = df_filtered_t8[col].sum()
+                            # Kiểm tra nếu là cột Hoàn Vốn thì áp dụng công thức: Tổng Chi Phí / Tổng Delta
+                            if actual_payback_col and str(col).lower() == str(actual_payback_col).lower():
+                                sum_c = df_filtered_t8[actual_cost_col].sum() if actual_cost_col else 0
+                                sum_d = df_filtered_t8[actual_delta_col].sum() if actual_delta_col else 0
+                                sum_data_t8[col] = (sum_c / sum_d) if sum_d != 0 else 0
+                            else:
+                                sum_data_t8[col] = df_filtered_t8[col].sum()
                         else:
                             sum_data_t8[col] = ""
                     
@@ -1963,7 +1979,11 @@ if not df_source.empty:
                     # Bảng 1: Lưới hàng ngang
                     df_table1_t8 = df_display_t8.copy()
                     for col in num_cols_t8:
-                        df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
+                        # Format riêng cho cột hoàn vốn (2 chữ số thập phân)
+                        if actual_payback_col and str(col).lower() == str(actual_payback_col).lower():
+                            df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
+                        else:
+                            df_table1_t8[col] = df_table1_t8[col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) and pd.notna(x) else x)
                     
                     st.markdown('<h4 style="color:red; font-weight:bold;">📊 Bảng 1: Tổng Hợp Lưới Hàng Ngang</h4>', unsafe_allow_html=True)
                     st.markdown(df_table1_t8.to_html(index=False, classes="red-header-tab8", escape=False), unsafe_allow_html=True)
