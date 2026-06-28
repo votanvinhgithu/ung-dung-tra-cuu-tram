@@ -28,57 +28,91 @@ def save_payment_status(status_dict):
     except Exception as e:
         return False
 
-def get_overdue_alert(df_src):
+def get_overdue_alert(f_source):
     """
-    Tính các trạm chưa thanh toán và đã trễ hạn.
-    Trả về tuple (overdue_6, overdue_4, overdue_2) — mỗi phần tử là list (mã_trạm, số_ngày_trễ).
+    Tính các trạm chưa thanh toán và trễ hạn.
+    Kiểm tra cả THÁNG HIỆN TẠI và THÁNG TRƯỚC.
+    Trạm tháng trước chưa TT sẽ có nhãn '[T.TRƯỚC]' kèm theo trong banner.
+    Trả về tuple (over6, over4, over2, over1).
     """
-    if df_src is None or df_src.empty:
-        return [], [], []
-    if '__is_due_this_month__' not in df_src.columns:
-        return [], [], []
+    if f_source is None:
+        return [], [], [], []
 
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    current_safe = today.strftime('%m_%Y')  # key trong payment_status.json
+
+    # --- Tháng hiện tại ---
+    curr_month_str = today.strftime('%m/%Y')   # VD: 06/2026
+    curr_safe      = today.strftime('%m_%Y')   # VD: 06_2026
+
+    # --- Tháng trước (xử lý đúng qua năm: tháng 1 → tháng 12 năm trước) ---
+    if today.month == 1:
+        pm, py = 12, today.year - 1
+    else:
+        pm, py = today.month - 1, today.year
+    prev_month_str = f"{pm:02d}/{py}"          # VD: 05/2026
+    prev_safe      = f"{pm:02d}_{py}"          # VD: 05_2026
 
     all_status = load_payment_status()
-    paid_set = set(all_status.get(current_safe, []))
+    paid_curr = set(all_status.get(curr_safe, []))
+    paid_prev = set(all_status.get(prev_safe, []))
 
-    df_due = df_src[df_src['__is_due_this_month__'] == True].copy()
-
-    over6, over4, over2 = [], [], []
-    for _, row in df_due.iterrows():
-        ma = str(row.get('mã trạm', '')).strip()
-        if not ma or ma.lower() in ('nan', ''):
-            continue
-        if ma in paid_set:
-            continue  # đã thanh toán rồi → bỏ qua
-
-        due_str = str(row.get('Ngày tới hạn TT trong tháng', '')).strip()
+    # Hàm load & lọc trạm đến hạn của 1 tháng
+    def _load_due(month_str):
         try:
-            due_date = datetime.strptime(due_str, '%m/%d/%Y').replace(hour=0, minute=0, second=0, microsecond=0)
-            days_late = (today - due_date).days
-            if days_late >= 6:
-                over6.append((ma, days_late))
-            elif days_late >= 4:
-                over4.append((ma, days_late))
-            elif days_late >= 2:
-                over2.append((ma, days_late))
+            df = load_data_and_enrich_v3(f_source, month_str)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            return df[df['__is_due_this_month__'] == True].copy()
         except Exception:
-            pass
+            return pd.DataFrame()
+
+    df_curr_due = _load_due(curr_month_str)
+    df_prev_due = _load_due(prev_month_str)
+
+    over6, over4, over2, over1 = [], [], [], []
+
+    # Hàm xử lý chung: duyệt từng trạm, tính ngày trễ, phân loại
+    # suffix = '' với tháng hiện tại, '[T.TRƯỚC]' với tháng trước
+    def _process(df_due, paid_set, suffix=''):
+        for _, row in df_due.iterrows():
+            ma = str(row.get('mã trạm', '')).strip()
+            if not ma or ma.lower() in ('nan', ''):
+                continue
+            if ma in paid_set:
+                continue  # đã TT → bỏ qua
+
+            due_str = str(row.get('Ngày tới hạn TT trong tháng', '')).strip()
+            try:
+                due_date  = datetime.strptime(due_str, '%m/%d/%Y').replace(
+                                hour=0, minute=0, second=0, microsecond=0)
+                days_late = (today - due_date).days
+                label     = f"{ma} {suffix}".strip() if suffix else ma
+                if days_late >= 6:
+                    over6.append((label, days_late))
+                elif days_late >= 4:
+                    over4.append((label, days_late))
+                elif days_late >= 2:
+                    over2.append((label, days_late))
+                elif days_late >= 1:
+                    over1.append((label, days_late))
+            except Exception:
+                pass
+
+    _process(df_curr_due, paid_curr)                 # tháng hiện tại
+    _process(df_prev_due, paid_prev, '[T.TRƯỚC]')    # tháng trước, ghi chú rõ
 
     # Sắp xếp giảm dần theo số ngày trễ
-    over6.sort(key=lambda x: -x[1])
-    over4.sort(key=lambda x: -x[1])
-    over2.sort(key=lambda x: -x[1])
-    return over6, over4, over2
+    for lst in [over6, over4, over2, over1]:
+        lst.sort(key=lambda x: -x[1])
+    return over6, over4, over2, over1
 
 
-def render_overdue_banner(df_src):
+
+def render_overdue_banner(f_source):
     """Hiển thị banner chạy chữ cảnh báo trạm trễ thanh toán (nếu có)."""
-    over6, over4, over2 = get_overdue_alert(df_src)
+    over6, over4, over2, over1 = get_overdue_alert(f_source)
 
-    if not over6 and not over4 and not over2:
+    if not over6 and not over4 and not over2 and not over1:
         return  # không có trạm nào trễ → không hiển thị gì
 
     parts = []
@@ -91,13 +125,16 @@ def render_overdue_banner(df_src):
     if over2:
         tram_list = '  |  '.join([f"{m} ({d} ngày)" for m, d in over2])
         parts.append(f"🟡 QUÁ 2 NGÀY — {len(over2)} TRẠM: {tram_list}")
+    if over1:
+        tram_list = '  |  '.join([f"{m} (1 ngày)" for m, _ in over1])
+        parts.append(f"⚪ TRỄ 1 NGÀY — {len(over1)} TRẠM: {tram_list}")
 
-    total_overdue = len(over6) + len(over4) + len(over2)
-    separator = "    ★    "
+    total_overdue = len(over6) + len(over4) + len(over2) + len(over1)
+    separator = "    ★    "
     scroll_text = separator.join(parts)
-    full_text = f"⚠️ CẢNH BÁO TRỄ THANH TOÁN — TỔNG {total_overdue} TRẠM CHƯA TT:      {scroll_text}      "
+    full_text = f"⚠️ CẢNH BÁO TRỄ THANH TOÁN — TỔNG {total_overdue} TRẠM CHƯA TT:      {scroll_text}      "
     # Lặp lại 2 lần để marquee trông mượt liên tục
-    full_text_double = full_text + "        " + full_text
+    full_text_double = full_text + "        " + full_text
 
     # Tính tốc độ scroll tỷ lệ theo độ dài chuỗi
     duration = max(20, len(full_text) * 0.18)
@@ -155,7 +192,6 @@ def render_overdue_banner(df_src):
         </div>
     </div>
     """, unsafe_allow_html=True)
-
 
 st.set_page_config(page_title="Hệ Thống Tra Cứu Hợp Đồng", page_icon="📡", layout="wide")
 
@@ -1019,7 +1055,7 @@ def render_cards(df_to_render, is_payment_tab=False, columns_to_show=None):
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
     # --- BANNER CẢNH BÁO TRỄ THANH TOÁN (hiển thị trước tất cả các tab) ---
-    render_overdue_banner(df_source)
+    render_overdue_banner(DEFAULT_FILE if DEFAULT_FILE else uploaded_file)
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
