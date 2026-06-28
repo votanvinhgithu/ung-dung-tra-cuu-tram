@@ -28,7 +28,135 @@ def save_payment_status(status_dict):
     except Exception as e:
         return False
 
-# --- CẤU HÌNH GIAO DIỆN WEB ---
+def get_overdue_alert(df_src):
+    """
+    Tính các trạm chưa thanh toán và đã trễ hạn.
+    Trả về tuple (overdue_6, overdue_4, overdue_2) — mỗi phần tử là list (mã_trạm, số_ngày_trễ).
+    """
+    if df_src is None or df_src.empty:
+        return [], [], []
+    if '__is_due_this_month__' not in df_src.columns:
+        return [], [], []
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    current_safe = today.strftime('%m_%Y')  # key trong payment_status.json
+
+    all_status = load_payment_status()
+    paid_set = set(all_status.get(current_safe, []))
+
+    df_due = df_src[df_src['__is_due_this_month__'] == True].copy()
+
+    over6, over4, over2 = [], [], []
+    for _, row in df_due.iterrows():
+        ma = str(row.get('mã trạm', '')).strip()
+        if not ma or ma.lower() in ('nan', ''):
+            continue
+        if ma in paid_set:
+            continue  # đã thanh toán rồi → bỏ qua
+
+        due_str = str(row.get('Ngày tới hạn TT trong tháng', '')).strip()
+        try:
+            due_date = datetime.strptime(due_str, '%m/%d/%Y').replace(hour=0, minute=0, second=0, microsecond=0)
+            days_late = (today - due_date).days
+            if days_late >= 6:
+                over6.append((ma, days_late))
+            elif days_late >= 4:
+                over4.append((ma, days_late))
+            elif days_late >= 2:
+                over2.append((ma, days_late))
+        except Exception:
+            pass
+
+    # Sắp xếp giảm dần theo số ngày trễ
+    over6.sort(key=lambda x: -x[1])
+    over4.sort(key=lambda x: -x[1])
+    over2.sort(key=lambda x: -x[1])
+    return over6, over4, over2
+
+
+def render_overdue_banner(df_src):
+    """Hiển thị banner chạy chữ cảnh báo trạm trễ thanh toán (nếu có)."""
+    over6, over4, over2 = get_overdue_alert(df_src)
+
+    if not over6 and not over4 and not over2:
+        return  # không có trạm nào trễ → không hiển thị gì
+
+    parts = []
+    if over6:
+        tram_list = '  |  '.join([f"{m} ({d} ngày)" for m, d in over6])
+        parts.append(f"🔴 QUÁ 6 NGÀY — {len(over6)} TRẠM: {tram_list}")
+    if over4:
+        tram_list = '  |  '.join([f"{m} ({d} ngày)" for m, d in over4])
+        parts.append(f"🟠 QUÁ 4 NGÀY — {len(over4)} TRẠM: {tram_list}")
+    if over2:
+        tram_list = '  |  '.join([f"{m} ({d} ngày)" for m, d in over2])
+        parts.append(f"🟡 QUÁ 2 NGÀY — {len(over2)} TRẠM: {tram_list}")
+
+    total_overdue = len(over6) + len(over4) + len(over2)
+    separator = "    ★    "
+    scroll_text = separator.join(parts)
+    full_text = f"⚠️ CẢNH BÁO TRỄ THANH TOÁN — TỔNG {total_overdue} TRẠM CHƯA TT:      {scroll_text}      "
+    # Lặp lại 2 lần để marquee trông mượt liên tục
+    full_text_double = full_text + "        " + full_text
+
+    # Tính tốc độ scroll tỷ lệ theo độ dài chuỗi
+    duration = max(20, len(full_text) * 0.18)
+
+    st.markdown(f"""
+    <style>
+    @keyframes ticker-scroll {{
+        0%   {{ transform: translateX(0); }}
+        100% {{ transform: translateX(-50%); }}
+    }}
+    .overdue-ticker-wrap {{
+        width: 100%;
+        overflow: hidden;
+        background: linear-gradient(90deg, #1a0000 0%, #3d0000 40%, #1a0000 100%);
+        border: 2px solid #ff1744;
+        border-radius: 8px;
+        padding: 10px 0;
+        margin-bottom: 14px;
+        box-shadow: 0 0 12px rgba(255,23,68,0.5);
+    }}
+    .overdue-ticker-inner {{
+        display: inline-block;
+        white-space: nowrap;
+        animation: ticker-scroll {duration:.1f}s linear infinite;
+        will-change: transform;
+    }}
+    .overdue-ticker-inner span {{
+        font-size: 15px;
+        font-weight: 900;
+        color: #ff4444;
+        letter-spacing: 0.5px;
+        font-family: 'Courier New', monospace;
+    }}
+    .ticker-badge {{
+        display:inline-block;
+        background:#ff1744;
+        color:white;
+        font-weight:900;
+        font-size:13px;
+        padding:2px 10px;
+        border-radius:12px;
+        margin-right:10px;
+        vertical-align:middle;
+        animation: pulse-badge 1s ease-in-out infinite alternate;
+    }}
+    @keyframes pulse-badge {{
+        from {{ box-shadow: 0 0 4px #ff1744; }}
+        to   {{ box-shadow: 0 0 14px #ff6b6b, 0 0 4px #ff1744; }}
+    }}
+    </style>
+    <div class="overdue-ticker-wrap">
+        <span class="ticker-badge">⚠️ TRỄ TT</span>
+        <div class="overdue-ticker-inner">
+            <span>{full_text_double}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 st.set_page_config(page_title="Hệ Thống Tra Cứu Hợp Đồng", page_icon="📡", layout="wide")
 
 st.title("📡 Tra Cứu Hợp Đồng & Quản Lý Thanh Toán")
@@ -890,6 +1018,9 @@ def render_cards(df_to_render, is_payment_tab=False, columns_to_show=None):
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
+    # --- BANNER CẢNH BÁO TRỄ THANH TOÁN (hiển thị trước tất cả các tab) ---
+    render_overdue_banner(df_source)
+
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
         "💵 DS TRẠM TT CHỦ NHÀ",
