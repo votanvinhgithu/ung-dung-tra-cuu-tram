@@ -2,8 +2,31 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+import json
 from datetime import datetime, timedelta
 import re
+
+# --- HÀM LƯU / ĐỌC TRẠNG THÁI THANH TOÁN (JSON) ---
+PAYMENT_STATUS_FILE = "payment_status.json"
+
+def load_payment_status():
+    """Đọc file JSON lưu trạng thái thanh toán. Trả về dict {MM_YYYY: [list mã trạm đã TT]}."""
+    if os.path.exists(PAYMENT_STATUS_FILE):
+        try:
+            with open(PAYMENT_STATUS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_payment_status(status_dict):
+    """Ghi dict trạng thái thanh toán ra file JSON."""
+    try:
+        with open(PAYMENT_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(status_dict, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        return False
 
 # --- CẤU HÌNH GIAO DIỆN WEB ---
 st.set_page_config(page_title="Hệ Thống Tra Cứu Hợp Đồng", page_icon="📡", layout="wide")
@@ -1260,188 +1283,320 @@ if not df_source.empty:
 
     # ------------ TAB 5: CÚ PHÁP CHUYỂN KHOẢN NH ------------
     with tab5:
-        st.markdown(f"### 💸 Tự Động Hóa Cú Pháp Chuyển Khoản Ngân Hàng")
+        st.markdown("### 💸 Tự Động Hóa Cú Pháp Chuyển Khoản Ngân Hàng")
+
+        # --- FORM TRA CỨU ---
         with st.form(key='subject_form'):
             st.info("💡 Tra cứu theo định dạng Tháng/Năm (MM/YYYY) để kết xuất Cú pháp Content cho Ngân hàng.")
             month_input_tab5 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=datetime.now().strftime('%m/%Y'))
-            
             c1, c2 = st.columns(2)
             with c1:
-                date_start_tab5 = st.text_input("⏳ Từ ngày (Để trống lấy từ đầu tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/01/2026")
+                date_start_tab5 = st.text_input("⏳ Từ ngày (Để trống = đầu tháng):", placeholder="MM/DD/YYYY. VD: 06/01/2026")
             with c2:
-                date_end_tab5 = st.text_input("⏳ Đến ngày (Để trống lấy đến cuối tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/25/2026")
-                
-            submit_subject = st.form_submit_button(label="🔍 TẠO DANH SÁCH COPY (NGÂN HÀNG)", use_container_width=True)
-            
+                date_end_tab5 = st.text_input("⏳ Đến ngày (Để trống = cuối tháng):", placeholder="MM/DD/YYYY. VD: 06/30/2026")
+            submit_subject = st.form_submit_button(label="🔍 TẠO DANH SÁCH CHUYỂN KHOẢN", use_container_width=True)
+
+        # --- XỬ LÝ KHI SUBMIT FORM (lưu kết quả vào session_state để persist qua rerun) ---
         if submit_subject:
             if not validate_month_year(month_input_tab5):
-                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
+                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả!")
             else:
                 f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
                 if f_source is None:
-                    st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích!")
+                    st.warning("⚠️ Không tìm thấy File dữ liệu để phân tích!")
                 else:
-                    with st.spinner(f"Hệ thống đang trích xuất Nội dung Chuyển khoản trong {month_input_tab5}..."):
-                        df_pay_source_5 = load_data_and_enrich_v3(f_source, month_input_tab5)
-                        df_pay_display_5 = df_pay_source_5[df_pay_source_5["__is_due_this_month__"] == True].copy()
-                    
-                    # Bộ lọc Khoảng thời gian
-                    has_date_error_5 = False
-                    v1_ok, e1 = validate_input_date(date_start_tab5)
-                    v2_ok, e2 = validate_input_date(date_end_tab5)
-                    
-                    if not v1_ok:
-                        has_date_error_5 = True
-                        display_error(e1)
-                    elif not v2_ok:
-                        has_date_error_5 = True
-                        display_error(e2)
+                    with st.spinner(f"Đang trích xuất danh sách chuyển khoản tháng {month_input_tab5}..."):
+                        _df_src5 = load_data_and_enrich_v3(f_source, month_input_tab5)
+                        _df_due5 = _df_src5[_df_src5["__is_due_this_month__"] == True].copy()
+
+                    _err5 = False
+                    _v1, _e1 = validate_input_date(date_start_tab5)
+                    _v2, _e2 = validate_input_date(date_end_tab5)
+                    if not _v1:
+                        _err5 = True; display_error(_e1)
+                    elif not _v2:
+                        _err5 = True; display_error(_e2)
                     elif date_start_tab5.strip() or date_end_tab5.strip():
                         try:
-                            temp_dt = pd.to_datetime(df_pay_display_5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
-                            mask_date = pd.Series([True] * len(df_pay_display_5), index=df_pay_display_5.index)
-                            
+                            _tmp_dt = pd.to_datetime(_df_due5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
+                            _msk = pd.Series([True] * len(_df_due5), index=_df_due5.index)
                             if date_start_tab5.strip():
-                                start_dt = pd.to_datetime(date_start_tab5.strip(), format='%m/%d/%Y')
-                                mask_date &= (temp_dt >= start_dt)
-                                
+                                _msk &= (_tmp_dt >= pd.to_datetime(date_start_tab5.strip(), format='%m/%d/%Y'))
                             if date_end_tab5.strip():
-                                end_dt = pd.to_datetime(date_end_tab5.strip(), format='%m/%d/%Y')
-                                mask_date &= (temp_dt <= end_dt)
-                                
-                            mask_date &= temp_dt.notna()
-                            df_pay_display_5 = df_pay_display_5[mask_date]
+                                _msk &= (_tmp_dt <= pd.to_datetime(date_end_tab5.strip(), format='%m/%d/%Y'))
+                            _msk &= _tmp_dt.notna()
+                            _df_due5 = _df_due5[_msk]
                         except Exception:
-                            has_date_error_5 = True
-                            display_error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
-                
-                if has_date_error_5:
-                    pass
-                elif df_pay_display_5.empty:
-                    st.warning(f"❌ Không tìm thấy Hợp đồng Trạm nào cần Chuyển Khoản thỏa mãn điều kiện lọc trong tháng {month_input_tab5}.")
-                else:
-                    # Sắp xếp lịch giải ngân từ sớm đến trễ
-                    df_pay_display_5 = df_pay_display_5.sort_values(
-                        by="Ngày tới hạn TT trong tháng", 
-                        key=lambda col: pd.to_datetime(col, format='%m/%d/%Y', errors='coerce')
-                    )
-                    
-                    total_stations_5 = len(df_pay_display_5)
-                    total_amount_5 = df_pay_display_5["__raw_amount__"].sum()
-                    
-                    st.snow()
-                    if date_start_tab5.strip() or date_end_tab5.strip():
-                        msg_start = date_start_tab5.strip() if date_start_tab5.strip() else "Đầu tháng"
-                        msg_end = date_end_tab5.strip() if date_end_tab5.strip() else "Cuối tháng"
-                        st.success(f"🔥 Khởi tạo Cú Pháp thành công cho **{total_stations_5}** hợp đồng (Từ {msg_start} đến {msg_end})!")
-                    else:
-                        st.success(f"🔥 Đã khởi tạo Cú Pháp Chuyển Khoản thành công cho toàn bộ **{total_stations_5}** hợp đồng Chủ Nhà của Cả tháng!")
-                        
-                    colA, colB = st.columns(2)
-                    colA.metric("🏢 Tổng số trạm hiển thị:", f"{total_stations_5} trạm")
-                    colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount_5:,.0f} VNĐ")
-                    
-                    def generate_subject(row):
-                        ma_tram = str(row.get("mã trạm", "")).strip().upper()
-                        if pd.isna(ma_tram) or ma_tram == "NAN": ma_tram = ""
-                        
-                        # Xóa bỏ các Cụm tên riêng dính liền dễ phát sinh
-                        ma_tram = ma_tram.replace('_A DŨNG', '').replace('_A DUNG', '').replace('A DŨNG', '').replace('A DUNG', '')
-                        
-                        # Bắt đầu "MÁY SẤY" loại bỏ các ký tự đặc biệt: -, ->, -->, khoảng trắng, phẩy, chấm, gạch dưới
-                        for char in ['>', '-', ' ', ',', '.', '_']:
-                            ma_tram = ma_tram.replace(char, '')
-                        
-                        raw_hd = str(row.get("Số HĐ với chủ nhà", "")).strip().upper()
-                        if pd.isna(raw_hd) or raw_hd == "NAN": raw_hd = ""
-                        
-                        # Trích lọc HĐ từ đầu đến hết DKV
-                        h_idx = raw_hd.find('DKV')
-                        if h_idx != -1:
-                            hd_clean = raw_hd[:h_idx+3]
-                        else:
-                            hd_clean = raw_hd
-                            
-                        # Loại bỏ "-", "/" và dấu cách
-                        hd_clean = hd_clean.replace('-', '').replace('/', '').replace(' ', '')
-                        
-                        date_str = ""
-                        try:
-                            d_curr_str = str(row.get("Ngày tới hạn TT trong tháng", "")).strip()
-                            d_next_str = str(row.get("Ngày đến hạn TT kỳ tiếp theo", "")).strip()
-                            
-                            d_curr = datetime.strptime(d_curr_str, '%m/%d/%Y')
-                            d_next = datetime.strptime(d_next_str, '%m/%d/%Y')
-                            
-                            # Lùi lại 1 ngày so với kỳ tiếp theo
-                            d_end = d_next - timedelta(days=1)
-                            
-                            str_start = d_curr.strftime('%d%m%Y')
-                            str_end = d_end.strftime('%d%m%Y')
-                            date_str = f"tu ngay {str_start} den {str_end}"
-                        except Exception:
-                            date_str = "tu ngay ... den ..."
-                            
-                        # Format chuỗi tiêu chuẩn
-                        subject = f"Thanh toan thue vi tri {ma_tram} theo HD {hd_clean} {date_str}"
-                        return subject
+                            _err5 = True; display_error("Lỗi định dạng ngày tháng!")
 
-                    df_pay_display_5["Cú pháp nội dung (Copy App)"] = df_pay_display_5.apply(generate_subject, axis=1)
-                    
-                    # Các cột cố định cần xuất
-                    cols_to_show = [
-                        "mã trạm", 
-                        "giá thuê chủ nhà", 
-                        "Số tiền cần thanh toán", 
-                        "Số TK chủ nhà", 
-                        "Chủ tài khoản", 
-                        "Tên Ngân Hàng", 
-                        "Ngày tới hạn TT trong tháng", 
-                        "Ngày đến hạn TT kỳ tiếp theo", 
-                        "Cú pháp nội dung (Copy App)"
-                    ]
-                    
-                    # Lọc lấy cột thực tế có trong mảng
-                    existing_cols = []
-                    for c in cols_to_show:
-                        if c in df_pay_display_5.columns:
-                            existing_cols.append(c)
-                        else:
-                            # Khớp linh động hoa thường
-                            match = [orig for orig in df_pay_display_5.columns if str(orig).strip().lower() == str(c).lower()]
-                            if match: existing_cols.append(match[0])
-                            
-                    df_clean_tab5 = df_pay_display_5[existing_cols].copy()
-                    df_clean_tab5.insert(0, 'STT', range(1, len(df_clean_tab5) + 1))
-                    
-                    st.markdown('<h3 style="color:red; font-weight:bold;">🏷️ Lưới Chi Tiết Cú Pháp Giao Dịch Ngân Hàng</h3>', unsafe_allow_html=True)
-                    st.markdown("""
-                    <style>
-                    .red-header-table-general { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
-                    .red-header-table-general th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
-                    .red-header-table-general td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
-                    .red-header-table-general tr:nth-child(even) { background-color: #f9f9f9; }
-                    .red-header-table-general tr:hover { background-color: #f1f1f1; }
-                    </style>
-                    """, unsafe_allow_html=True)
-                    
-                    html_report_5 = df_clean_tab5.to_html(index=False, classes="red-header-table-general", escape=False)
-                    st.markdown(html_report_5, unsafe_allow_html=True)
-                    
-                    # Nút Tải file Excel Danh sách Nội dung
-                    output5 = io.BytesIO()
-                    with pd.ExcelWriter(output5, engine='openpyxl') as writer:
-                        df_clean_tab5.to_excel(writer, index=False, sheet_name='Banking_Subject')
-                    excel_data5 = output5.getvalue()
-                    
-                    safe_time_5 = month_input_tab5.replace('/', '_')
-                    st.download_button(
-                        label="🔽 TẢI BÁO CÁO DANH SÁCH CÚ PHÁP CHUYỂN KHOẢN (EXCEL)",
-                        data=excel_data5,
-                        file_name=f"Cú_Pháp_Chuyển_Khoản_{safe_time_5}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
+                    if not _err5 and _df_due5.empty:
+                        st.warning(f"❌ Không tìm thấy hợp đồng nào cần thanh toán trong tháng {month_input_tab5}.")
+                    elif not _err5:
+                        _df_due5 = _df_due5.sort_values(
+                            by="Ngày tới hạn TT trong tháng",
+                            key=lambda col: pd.to_datetime(col, format='%m/%d/%Y', errors='coerce')
+                        )
+
+                        def _gen_subject(row):
+                            ma = str(row.get("mã trạm", "")).strip().upper()
+                            if pd.isna(ma) or ma == "NAN": ma = ""
+                            for rm in ['_A DŨNG','_A DUNG','A DŨNG','A DUNG']:
+                                ma = ma.replace(rm, '')
+                            for ch in ['>','-',' ',',','.','_']:
+                                ma = ma.replace(ch, '')
+                            hd = str(row.get("Số HĐ với chủ nhà", "")).strip().upper()
+                            if pd.isna(hd) or hd == "NAN": hd = ""
+                            idx = hd.find('DKV')
+                            hd = (hd[:idx+3] if idx != -1 else hd).replace('-','').replace('/','').replace(' ','')
+                            try:
+                                d1 = datetime.strptime(str(row.get("Ngày tới hạn TT trong tháng","")).strip(), '%m/%d/%Y')
+                                d2 = datetime.strptime(str(row.get("Ngày đến hạn TT kỳ tiếp theo","")).strip(), '%m/%d/%Y')
+                                ds = f"tu ngay {d1.strftime('%d%m%Y')} den {(d2-timedelta(days=1)).strftime('%d%m%Y')}"
+                            except Exception:
+                                ds = "tu ngay ... den ..."
+                            return f"Thanh toan thue vi tri {ma} theo HD {hd} {ds}"
+
+                        _df_due5["Cú pháp nội dung (Copy App)"] = _df_due5.apply(_gen_subject, axis=1)
+
+                        _cols5 = ["mã trạm","giá thuê chủ nhà","Số tiền cần thanh toán","Số TK chủ nhà",
+                                  "Chủ tài khoản","Tên Ngân Hàng","Ngày tới hạn TT trong tháng",
+                                  "Ngày đến hạn TT kỳ tiếp theo","Cú pháp nội dung (Copy App)"]
+                        _exist5 = []
+                        for c in _cols5:
+                            if c in _df_due5.columns: _exist5.append(c)
+                            else:
+                                m = [x for x in _df_due5.columns if str(x).strip().lower() == c.lower()]
+                                if m: _exist5.append(m[0])
+
+                        _df_clean5 = _df_due5[_exist5].copy()
+                        _df_clean5.reset_index(drop=True, inplace=True)
+
+                        # Lưu vào session_state để persist qua mọi rerun
+                        st.session_state['t5_df_clean']   = _df_clean5
+                        st.session_state['t5_df_amounts'] = _df_due5[["mã trạm","__raw_amount__"]].copy()
+                        st.session_state['t5_month']      = month_input_tab5
+                        st.session_state['t5_safe_time']  = month_input_tab5.replace('/', '_')
+                        st.session_state['t5_total']      = len(_df_clean5)
+                        st.session_state['t5_total_amt']  = _df_due5["__raw_amount__"].sum()
+                        st.snow()
+
+        # ================================================================
+        # PHẦN HIỂN THỊ KẾT QUẢ & THEO DÕI — NẰNG NGOÀI if submit_subject
+        # (Persist qua mọi rerun: tick checkbox, nhấn Lưu, bất kỳ tương tác nào)
+        # ================================================================
+        if 't5_df_clean' in st.session_state:
+            _dc   = st.session_state['t5_df_clean']
+            _damt = st.session_state['t5_df_amounts']
+            _mon  = st.session_state['t5_month']
+            _stime= st.session_state['t5_safe_time']
+            _tot  = st.session_state['t5_total']
+            _tamt = st.session_state['t5_total_amt']
+
+            st.success(f"🔥 **Tháng {_mon}: {_tot} hợp đồng cần thanh toán — Tổng: {_tamt:,.0f} VNĐ**")
+
+            # ---- Bảng cú pháp HTML (cuộn ngang được trên mobile) ----
+            st.markdown('<h3 style="color:red; font-weight:bold;">🏷️ Danh Sách Cú Pháp Chuyển Khoản</h3>', unsafe_allow_html=True)
+            st.markdown("""
+            <style>
+            .tab5-table{width:100%;border-collapse:collapse;margin:8px 0 16px 0;font-family:"Source Sans Pro",sans-serif;}
+            .tab5-table th{background:#ffeaea!important;color:#c62828!important;font-weight:900!important;border:1px solid #e0e0e0;padding:10px 8px;font-size:14px;white-space:nowrap;}
+            .tab5-table td{border:1px solid #e0e0e0;padding:8px;font-size:13px;word-break:break-word;}
+            .tab5-table tr:nth-child(even){background:#fafafa;}
+            .tab5-table tr:hover{background:#fff3e0;}
+            </style>""", unsafe_allow_html=True)
+
+            _dc_show = _dc.copy()
+            _dc_show.insert(0, 'STT', range(1, len(_dc_show)+1))
+            st.markdown(_dc_show.to_html(index=False, classes="tab5-table", escape=False), unsafe_allow_html=True)
+
+            # ================================================================
+            # SECTION: THEO DÕI THANH TOÁN (MOBILE-FRIENDLY)
+            # ================================================================
+            st.markdown("---")
+            st.markdown("""
+            <div style="background:linear-gradient(135deg,#e3f2fd,#e8f5e9);border-radius:12px;
+                        padding:16px 20px;margin-bottom:12px;border-left:5px solid #1565c0;">
+                <h3 style="color:#1565c0;margin:0 0 6px 0;font-size:1.2em;">✅ Theo Dõi Thanh Toán Chủ Nhà</h3>
+                <p style="color:#444;margin:0;font-size:13px;">
+                    Tick ô <b>✅ Đã TT</b> cho trạm đã chuyển khoản xong.<br>
+                    Có thể <b>bỏ tick</b> nếu nhầm. Nhấn <b>💾 LƯU & ÁP DỤNG</b> để ghi lại bền vững.
+                </p>
+            </div>""", unsafe_allow_html=True)
+
+            _sess_key   = f"pay_status_{_stime}"
+            _ctr_key    = f"save_ctr_{_stime}"
+
+            # Khởi tạo save counter
+            if _ctr_key not in st.session_state:
+                st.session_state[_ctr_key] = 0
+
+            # Đọc từ JSON nếu session chưa có (lần đầu trong phiên)
+            if _sess_key not in st.session_state:
+                _all_status = load_payment_status()
+                st.session_state[_sess_key] = set(_all_status.get(_stime, []))
+
+            _paid_set = st.session_state[_sess_key]
+
+            # Progress bar
+            _n_paid = len([m for m in _dc["mã trạm"].astype(str).str.strip() if m in _paid_set])
+            _pct = _n_paid / _tot if _tot > 0 else 0
+            st.markdown(f"""
+            <div style="margin:8px 0;">
+                <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:bold;margin-bottom:4px;">
+                    <span style="color:#1b5e20;">✅ Đã TT: {_n_paid}/{_tot} trạm</span>
+                    <span style="color:#e65100;">⏳ Còn lại: {_tot - _n_paid} trạm</span>
+                </div>
+                <div style="background:#e0e0e0;border-radius:8px;height:14px;overflow:hidden;">
+                    <div style="background:linear-gradient(90deg,#43a047,#66bb6a);width:{_pct*100:.1f}%;
+                                height:100%;border-radius:8px;transition:width 0.4s;"></div>
+                </div>
+                <div style="text-align:center;font-size:12px;color:#555;margin-top:3px;">{_pct*100:.0f}% hoàn thành</div>
+            </div>""", unsafe_allow_html=True)
+
+            # Bảng tracker (data_editor) — chỉ các cột cần thiết, mobile-friendly
+            _tracker_cols_map = {
+                "mã trạm":                        "Mã trạm",
+                "Số tiền cần thanh toán":          "Số tiền (VNĐ)",
+                "Chủ tài khoản":                   "Chủ nhà",
+                "Tên Ngân Hàng":                   "Ngân hàng",
+                "Ngày tới hạn TT trong tháng":     "Ngày TT",
+            }
+            _tracker_rows = []
+            for _, _r in _dc.iterrows():
+                _ma = str(_r.get("mã trạm", "")).strip()
+                _row_data = {"✅ Đã TT": _ma in _paid_set}
+                for _src_col, _dst_col in _tracker_cols_map.items():
+                    _row_data[_dst_col] = _r.get(_src_col, "-") if _src_col in _dc.columns else "-"
+                _tracker_rows.append(_row_data)
+            _df_tracker = pd.DataFrame(_tracker_rows)
+
+            # Editor key thay đổi sau mỗi lần lưu → force refresh checkbox state
+            _editor_key = f"editor_{_sess_key}_{st.session_state[_ctr_key]}"
+
+            _edited = st.data_editor(
+                _df_tracker,
+                column_config={
+                    "✅ Đã TT": st.column_config.CheckboxColumn(
+                        "✅ Đã TT",
+                        help="Tick = đã chuyển khoản | Bỏ tick = chưa TT",
+                        default=False,
+                        width="small",
                     )
+                },
+                disabled=["Mã trạm","Số tiền (VNĐ)","Chủ nhà","Ngân hàng","Ngày TT"],
+                use_container_width=True,
+                hide_index=True,
+                key=_editor_key,
+            )
+
+            # Nút LƯU full-width — nổi bật, dễ bấm trên điện thoại
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            _btn_save = st.button(
+                "💾  LƯU & ÁP DỤNG TRẠNG THÁI THANH TOÁN",
+                use_container_width=True,
+                type="primary",
+                key=f"btn_save_{_sess_key}_{st.session_state[_ctr_key]}"
+            )
+
+            if _btn_save:
+                _new_paid = set()
+                for _, _er in _edited.iterrows():
+                    if _er.get("✅ Đã TT", False):
+                        _new_paid.add(str(_er["Mã trạm"]).strip())
+
+                # Cập nhật session_state
+                st.session_state[_sess_key] = _new_paid
+
+                # Ghi ra JSON bền vững
+                _all_st = load_payment_status()
+                _all_st[_stime] = list(_new_paid)
+                _ok = save_payment_status(_all_st)
+
+                # Tăng counter để data_editor refresh checkbox đúng
+                st.session_state[_ctr_key] += 1
+
+                if _ok:
+                    st.success(f"✅ Đã lưu! {len(_new_paid)}/{_tot} trạm được đánh dấu ĐÃ thanh toán tháng {_mon}.")
+                else:
+                    st.error("❌ Lưu file thất bại! Kiểm tra quyền ghi trong thư mục app.")
+
+                st.rerun()
+
+            # ---- Tổng kết: tính từ data_editor đang hiển thị ----
+            _paid_in_ui = set()
+            for _, _er in _edited.iterrows():
+                if _er.get("✅ Đã TT", False):
+                    _paid_in_ui.add(str(_er["Mã trạm"]).strip())
+
+            _cnt_paid   = len(_paid_in_ui)
+            _cnt_unpaid = _tot - _cnt_paid
+
+            _damt2 = _damt.copy()
+            _damt2["mã trạm"] = _damt2["mã trạm"].astype(str).str.strip()
+            _paid_amt   = _damt2[_damt2["mã trạm"].isin(_paid_in_ui)]["__raw_amount__"].sum()
+            _unpaid_amt = _damt2[~_damt2["mã trạm"].isin(_paid_in_ui)]["__raw_amount__"].sum()
+
+            st.markdown("---")
+            _mc1,_mc2,_mc3,_mc4 = st.columns(4)
+            _mc1.metric("✅ Đã thanh toán",    f"{_cnt_paid} trạm")
+            _mc2.metric("💰 Tiền đã TT",       f"{_paid_amt:,.0f} đ")
+            _mc3.metric("⏳ Chưa thanh toán",  f"{_cnt_unpaid} trạm")
+            _mc4.metric("💸 Còn cần giải ngân",f"{_unpaid_amt:,.0f} đ")
+
+            # CSS cho 2 bảng tổng kết
+            st.markdown("""
+            <style>
+            .paid-table{width:100%;border-collapse:collapse;margin:6px 0 18px 0;font-size:13px;}
+            .paid-table th{background:#e8f5e9!important;color:#1b5e20!important;font-weight:900!important;
+                           border:1px solid #a5d6a7;padding:9px 8px;white-space:nowrap;}
+            .paid-table td{border:1px solid #c8e6c9;padding:7px 8px;}
+            .paid-table tr:nth-child(even){background:#f1f8e9;}
+            .unpaid-table{width:100%;border-collapse:collapse;margin:6px 0 18px 0;font-size:13px;}
+            .unpaid-table th{background:#fff3e0!important;color:#bf360c!important;font-weight:900!important;
+                             border:1px solid #ffcc80;padding:9px 8px;white-space:nowrap;}
+            .unpaid-table td{border:1px solid #ffe0b2;padding:7px 8px;}
+            .unpaid-table tr:nth-child(even){background:#fff8f0;}
+            </style>""", unsafe_allow_html=True)
+
+            # Bảng XANH - đã thanh toán
+            _df_paid_show = _dc[_dc["mã trạm"].astype(str).str.strip().isin(_paid_in_ui)].copy()
+            if not _df_paid_show.empty:
+                _df_paid_show.reset_index(drop=True, inplace=True)
+                _df_paid_show.insert(0,"STT", range(1, len(_df_paid_show)+1))
+                st.markdown(f'<h4 style="color:#1b5e20;margin-top:12px;">✅ Trạm Đã Thanh Toán ({_cnt_paid}/{_tot})</h4>', unsafe_allow_html=True)
+                st.markdown(_df_paid_show.to_html(index=False, classes="paid-table", escape=False), unsafe_allow_html=True)
+            else:
+                st.info("📋 Chưa có trạm nào được đánh dấu đã thanh toán. Tick ô ✅ Đã TT rồi nhấn Lưu.")
+
+            # Bảng CAM - chưa thanh toán
+            _df_unpaid_show = _dc[~_dc["mã trạm"].astype(str).str.strip().isin(_paid_in_ui)].copy()
+            if not _df_unpaid_show.empty:
+                _df_unpaid_show.reset_index(drop=True, inplace=True)
+                _df_unpaid_show.insert(0,"STT", range(1, len(_df_unpaid_show)+1))
+                st.markdown(f'<h4 style="color:#bf360c;margin-top:12px;">⏳ Trạm Chưa Thanh Toán ({_cnt_unpaid}/{_tot})</h4>', unsafe_allow_html=True)
+                st.markdown(_df_unpaid_show.to_html(index=False, classes="unpaid-table", escape=False), unsafe_allow_html=True)
+
+            # ---- Tải Excel đầy đủ (3 sheet) ----
+            st.markdown("---")
+            _df_export = _dc.copy()
+            _df_export["Trạng thái TT"] = _df_export["mã trạm"].astype(str).str.strip().apply(
+                lambda m: "✅ Đã TT" if m in _paid_in_ui else "⏳ Chưa TT"
+            )
+            _df_export.insert(0,"STT", range(1, len(_df_export)+1))
+            _out5 = io.BytesIO()
+            with pd.ExcelWriter(_out5, engine='openpyxl') as _wr:
+                _df_export.to_excel(_wr, index=False, sheet_name='Toan_Bo_DS')
+                if not _df_paid_show.empty:
+                    _df_paid_show.to_excel(_wr, index=False, sheet_name='Da_Thanh_Toan')
+                if not _df_unpaid_show.empty:
+                    _df_unpaid_show.to_excel(_wr, index=False, sheet_name='Chua_Thanh_Toan')
+            st.download_button(
+                label="🔽 TẢI EXCEL ĐẦY ĐỦ (CÚ PHÁP + TRẠNG THÁI THANH TOÁN)",
+                data=_out5.getvalue(),
+                file_name=f"Chuyen_Khoan_{_stime}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
 
     # ------------ TAB 6: BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN ------------
     with tab6:
