@@ -1057,7 +1057,7 @@ if not df_source.empty:
     # --- BANNER CẢNH BÁO TRỄ THANH TOÁN (hiển thị trước tất cả các tab) ---
     render_overdue_banner(DEFAULT_FILE if DEFAULT_FILE else uploaded_file)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "🔍 LỌC THÔNG TIN MÃ TRẠM",
         "💵 DS TRẠM TT CHỦ NHÀ",
         "💰 DOANH THU CÁC NHÀ MẠNG",
@@ -1065,7 +1065,8 @@ if not df_source.empty:
         "💸 CÚ PHÁP CHUYỂN KHOẢN APP NH",
         "🏛️ BÁO CÁO LỢI NHUẬN - LOẠI TRỪ CÁ NHÂN",
         "🗺️ BẢN ĐỒ VỊ TRÍ CÁC TRẠM",
-        "⌛ SEARCH HOÀN VỐN"
+        "⌛ SEARCH HOÀN VỐN",
+        "⏰ HẾT HẠN HĐ CHỦ NHÀ"
     ])
 
     # ------------ TAB 1: TRA CỨU TRẠM BẤT KỲ ------------
@@ -2608,6 +2609,233 @@ if not df_source.empty:
                 st.info("⚠️ Không tìm thấy sheet 'Sheet 6_time hoàn vốn' trong file dữ liệu.")
         else:
             st.warning("⚠️ Vui lòng kết nối dữ liệu để sử dụng tính năng này.")
+
+    # ------------ TAB 9: HẾT HẠN HĐ CHỦ NHÀ ------------
+    with tab9:
+        st.markdown("### ⏰ Ranking Trạm Sắp Hết Hạn Hợp Đồng Chủ Nhà")
+        st.info("📋 Hệ thống tự động đọc cột **Ngày ký HĐ** và **Ngày hết hạn HĐ** để tính số tháng còn lại. Trạm có thời hạn ngắn nhất hiển thị trên cùng để anh ưu tiên đàm phán gia hạn.")
+
+        today_t9 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Các cột cần show theo mẫu hình đính kèm
+        COLS_T9_SHOW = [
+            "mã trạm", "Q/H", "long thuê", "lat thuê", "Địa chỉ",
+            "Viettel", "Vina", "Mobi",
+            "Ngày ký HĐ Chủ nhà_trên HĐ", "Ngày hết hạn HĐ",
+            "Chủ nhà + SĐT",
+            "giá thuê chủ nhà", "Giá Viettel Thuê", "Giá MB thuê", "Giá Vina thuê",
+            "chu kỳ thanh toán cho chủ nhà"
+        ]
+
+        # --- Lấy dữ liệu từ df_source (đã được enrich) ---
+        df_t9 = df_source.copy()
+
+        # Chuẩn hoá cột ngày hết hạn
+        expiry_col = "Ngày hết hạn HĐ"
+        sign_col   = "Ngày ký HĐ Chủ nhà_trên HĐ"
+
+        # Parse ngày hết hạn linh hoạt (có thể mm/dd/yyyy hoặc datetime)
+        def parse_date_flexible(val):
+            if pd.isna(val) or str(val).strip() in ("", "-", "nan", "None"):
+                return None
+            if isinstance(val, (pd.Timestamp, datetime)):
+                return val.replace(hour=0, minute=0, second=0, microsecond=0)
+            s = str(val).strip()
+            for fmt in ("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d", "%m/%Y"):
+                try:
+                    return datetime.strptime(s, fmt)
+                except ValueError:
+                    pass
+            return None
+
+        df_t9["__expiry_dt__"] = df_t9[expiry_col].apply(parse_date_flexible)
+
+        # Tính số tháng còn lại (float, làm tròn 1 chữ số thập phân)
+        def months_remaining(expiry_dt):
+            if expiry_dt is None:
+                return None
+            diff_days = (expiry_dt - today_t9).days
+            return round(diff_days / 30.4375, 1)  # 30.4375 = ngày TB/tháng
+
+        df_t9["__months_left__"] = df_t9["__expiry_dt__"].apply(months_remaining)
+
+        # Chỉ lấy trạm còn từ 0 đến 6 tháng (bao gồm đã hết nhưng <= 0 để cảnh báo)
+        df_t9_valid = df_t9[
+            df_t9["__months_left__"].notna() &
+            (df_t9["__months_left__"] <= 6)
+        ].copy()
+
+        # Sắp xếp tăng dần: trạm gần hết nhất lên đầu
+        df_t9_valid = df_t9_valid.sort_values("__months_left__", ascending=True)
+
+        if df_t9_valid.empty:
+            st.success("✅ Tất cả hợp đồng chủ nhà còn thời hạn trên 6 tháng. Không có trạm cần ưu tiên đàm phán ngay.")
+        else:
+            total_urgent = len(df_t9_valid)
+            cnt_le3  = int((df_t9_valid["__months_left__"] <= 3).sum())
+            cnt_4    = int(((df_t9_valid["__months_left__"] > 3) & (df_t9_valid["__months_left__"] <= 4)).sum())
+            cnt_5    = int(((df_t9_valid["__months_left__"] > 4) & (df_t9_valid["__months_left__"] <= 5)).sum())
+            cnt_6    = int(((df_t9_valid["__months_left__"] > 5) & (df_t9_valid["__months_left__"] <= 6)).sum())
+
+            # --- Metric tổng quan ---
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            mc1.metric("🔥 Tổng trạm cần chú ý", f"{total_urgent} trạm")
+            mc2.metric("🚨 ≤ 3 tháng",  f"{cnt_le3} trạm")
+            mc3.metric("🟠 4 tháng",     f"{cnt_4} trạm")
+            mc4.metric("🟡 5 tháng",     f"{cnt_5} trạm")
+            mc5.metric("🟢 6 tháng",     f"{cnt_6} trạm")
+
+            # CSS bảng chung - header đỏ đậm
+            st.markdown("""
+            <style>
+            .expiry-table-hd { width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 22px;
+                               font-family: "Source Sans Pro", sans-serif; }
+            .expiry-table-hd th { background-color: #ffeaea !important; color: #ff0000 !important;
+                                   font-weight: 900 !important; border: 1px solid #e0e0e0;
+                                   padding: 10px 8px; text-align: left; font-size: 14px;
+                                   white-space: nowrap; }
+            .expiry-table-hd td { border: 1px solid #e0e0e0; padding: 7px 8px; font-size: 13px; }
+            .expiry-table-hd tr:nth-child(even) { background-color: #f9f9f9; }
+            .expiry-table-hd tr:hover { background-color: #fff3e0; }
+
+            /* màu nền theo nhóm */
+            .expiry-le3  td { background-color: #fff0f0 !important; color: #c62828 !important; font-weight: 700 !important; }
+            .expiry-m4   td { background-color: #fff3e0 !important; color: #e65100 !important; font-weight: 700 !important; }
+            .expiry-m5   td { background-color: #fffff0 !important; color: #827717 !important; font-weight: 600 !important; }
+            .expiry-m6   td { background-color: #f1f8e9 !important; color: #2e7d32 !important; font-weight: 600 !important; }
+
+            /* badge nhóm */
+            .badge-le3  { display:inline-block;background:#c62828;color:white;padding:2px 10px;
+                          border-radius:12px;font-size:12px;font-weight:bold;margin-right:6px; }
+            .badge-m4   { display:inline-block;background:#e65100;color:white;padding:2px 10px;
+                          border-radius:12px;font-size:12px;font-weight:bold;margin-right:6px; }
+            .badge-m5   { display:inline-block;background:#f9a825;color:white;padding:2px 10px;
+                          border-radius:12px;font-size:12px;font-weight:bold;margin-right:6px; }
+            .badge-m6   { display:inline-block;background:#2e7d32;color:white;padding:2px 10px;
+                          border-radius:12px;font-size:12px;font-weight:bold;margin-right:6px; }
+            </style>
+            """, unsafe_allow_html=True)
+
+            # --- Hàm build HTML table có class màu từng row ---
+            def build_expiry_html(df_group):
+                cols_exist = [c for c in COLS_T9_SHOW if c in df_group.columns]
+                # Header
+                th_html = "".join(
+                    ["<th>STT</th>", "<th>Số tháng còn lại</th>"] +
+                    [f"<th>{c}</th>" for c in cols_exist]
+                )
+                rows_html = ""
+                for idx, (_, row) in enumerate(df_group.iterrows(), start=1):
+                    mo = row["__months_left__"]
+                    # Xác định class màu
+                    if mo <= 0:
+                        row_cls = "expiry-le3"  # đã hết hạn
+                    elif mo <= 3:
+                        row_cls = "expiry-le3"
+                    elif mo <= 4:
+                        row_cls = "expiry-m4"
+                    elif mo <= 5:
+                        row_cls = "expiry-m5"
+                    else:
+                        row_cls = "expiry-m6"
+
+                    # Format số tháng
+                    if mo <= 0:
+                        mo_str = f"<b>ĐÃ HẾT HẠN ({mo:.1f})</b>"
+                    else:
+                        mo_str = f"{mo:.1f}"
+
+                    tds = f"<td>{idx}</td><td>{mo_str}</td>"
+                    for c in cols_exist:
+                        val = row.get(c, "")
+                        if pd.isna(val) or str(val).strip() in ("", "nan"): val = "-"
+                        tds += f"<td>{val}</td>"
+                    rows_html += f"<tr class='{row_cls}'>{tds}</tr>"
+
+                return f"<table class='expiry-table-hd'><thead><tr>{th_html}</tr></thead><tbody>{rows_html}</tbody></table>"
+
+            # --- Nhóm 1: ≤ 3 tháng (ĐỎ – nguy cấp) ---
+            df_g1 = df_t9_valid[df_t9_valid["__months_left__"] <= 3]
+            st.markdown("""
+            <div style='display:flex;align-items:center;gap:10px;margin:16px 0 6px 0;'>
+                <span class='badge-le3'>🚨 ≤ 3 THÁNG</span>
+                <span style='font-size:15px;font-weight:bold;color:#c62828;'>
+                    KHẨN CẤP – Ưu tiên đàm phán ngay!
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+            if df_g1.empty:
+                st.success("✅ Không có trạm nào còn ≤ 3 tháng.")
+            else:
+                st.markdown(build_expiry_html(df_g1), unsafe_allow_html=True)
+
+            # --- Nhóm 2: 4 tháng (CAM) ---
+            df_g2 = df_t9_valid[
+                (df_t9_valid["__months_left__"] > 3) & (df_t9_valid["__months_left__"] <= 4)
+            ]
+            st.markdown("""
+            <div style='display:flex;align-items:center;gap:10px;margin:16px 0 6px 0;'>
+                <span class='badge-m4'>🟠 4 THÁNG</span>
+                <span style='font-size:15px;font-weight:bold;color:#e65100;'>
+                    Cần lên kế hoạch đàm phán sớm
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+            if df_g2.empty:
+                st.success("✅ Không có trạm nào còn 4 tháng.")
+            else:
+                st.markdown(build_expiry_html(df_g2), unsafe_allow_html=True)
+
+            # --- Nhóm 3: 5 tháng (VÀNG) ---
+            df_g3 = df_t9_valid[
+                (df_t9_valid["__months_left__"] > 4) & (df_t9_valid["__months_left__"] <= 5)
+            ]
+            st.markdown("""
+            <div style='display:flex;align-items:center;gap:10px;margin:16px 0 6px 0;'>
+                <span class='badge-m5'>🟡 5 THÁNG</span>
+                <span style='font-size:15px;font-weight:bold;color:#827717;'>
+                    Theo dõi, chuẩn bị đàm phán
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+            if df_g3.empty:
+                st.success("✅ Không có trạm nào còn 5 tháng.")
+            else:
+                st.markdown(build_expiry_html(df_g3), unsafe_allow_html=True)
+
+            # --- Nhóm 4: 6 tháng (XANH) ---
+            df_g4 = df_t9_valid[
+                (df_t9_valid["__months_left__"] > 5) & (df_t9_valid["__months_left__"] <= 6)
+            ]
+            st.markdown("""
+            <div style='display:flex;align-items:center;gap:10px;margin:16px 0 6px 0;'>
+                <span class='badge-m6'>🟢 6 THÁNG</span>
+                <span style='font-size:15px;font-weight:bold;color:#2e7d32;'>
+                    Nắm thông tin, lên lịch làm việc
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+            if df_g4.empty:
+                st.success("✅ Không có trạm nào còn 6 tháng.")
+            else:
+                st.markdown(build_expiry_html(df_g4), unsafe_allow_html=True)
+
+            # --- Nút tải xuống Excel toàn bộ ---
+            st.markdown("---")
+            df_export_t9 = df_t9_valid.copy()
+            cols_export = ["__months_left__"] + [c for c in COLS_T9_SHOW if c in df_export_t9.columns]
+            df_export_t9 = df_export_t9[cols_export].rename(columns={"__months_left__": "Số tháng còn lại"})
+            df_export_t9.insert(0, "STT", range(1, len(df_export_t9) + 1))
+            out_t9 = io.BytesIO()
+            with pd.ExcelWriter(out_t9, engine='openpyxl') as writer:
+                df_export_t9.to_excel(writer, index=False, sheet_name='SapHetHan_HD')
+            st.download_button(
+                label="🔽 TẢI XUỐNG DANH SÁCH TRẠM SẮP HẾT HẠN HĐ (EXCEL)",
+                data=out_t9.getvalue(),
+                file_name=f"Tram_SapHetHan_HopDong_{today_t9.strftime('%d%m%Y')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
 
 else:
     st.info("💡 Hệ thống đang chờ liên kết Cơ Sở Dữ Liệu. File `data.xlsx` sẽ tự động kết nối khi nhìn thấy.")
