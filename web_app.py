@@ -206,6 +206,121 @@ def render_overdue_banner(f_source):
 
 st.set_page_config(page_title="Hệ Thống Tra Cứu Hợp Đồng", page_icon="📡", layout="wide")
 
+# =============================================================
+# BẢO MẬT: KIỂM SOÁT TRUY CẬP THEO GMAIL
+# =============================================================
+
+def _get_allowed_emails():
+    """Lấy danh sách email từ st.secrets. Nếu chạy local không có secrets thì trả về rỗng."""
+    try:
+        allowed = list(st.secrets.get("ALLOWED_EMAILS", []))
+        ketoan  = list(st.secrets.get("KETOAN_EMAILS", []))
+        return [e.strip().lower() for e in allowed], [e.strip().lower() for e in ketoan]
+    except Exception:
+        return [], []
+
+def is_ketoan():
+    """True nếu user hiện tại thuộc danh sách kế toán."""
+    _, ketoan_list = _get_allowed_emails()
+    email = st.session_state.get("user_email", "").strip().lower()
+    return email in ketoan_list
+
+def check_auth():
+    """
+    Kiểm tra quyền truy cập:
+    - Chưa đăng nhập  → hiển thị form nhập email → st.stop()
+    - Email không hợp lệ → hiển thị trang từ chối → st.stop()
+    - Hợp lệ → tiếp tục render app bình thường
+    """
+    allowed_list, ketoan_list = _get_allowed_emails()
+
+    # Nếu không có secrets (chạy local / dev) → bỏ qua auth
+    if not allowed_list:
+        return
+
+    # Nếu đã đăng nhập → kiểm tra email
+    if "user_email" in st.session_state and st.session_state["user_email"]:
+        email = st.session_state["user_email"].strip().lower()
+        if email not in allowed_list:
+            # Email không trong whitelist → từ chối
+            st.markdown("""
+            <div style="text-align:center;padding:80px 20px;">
+                <div style="font-size:72px;margin-bottom:20px;">🚫</div>
+                <h2 style="color:#c62828;margin-bottom:12px;">Không có quyền truy cập</h2>
+                <p style="color:#555;font-size:16px;max-width:400px;margin:0 auto 30px auto;">
+                    Email <b>{email}</b> không có trong danh sách được phép.<br>
+                    Liên hệ quản trị viên để được cấp quyền.
+                </p>
+            </div>
+            """.format(email=email), unsafe_allow_html=True)
+            if st.button("🔙 Đăng xuất", key="btn_logout_denied"):
+                st.session_state.pop("user_email", None)
+                st.rerun()
+            st.stop()
+        # Email hợp lệ → hiển thị nút đăng xuất trên sidebar
+        role = "👑 Kế toán" if email in ketoan_list else "👤 Xem"
+        with st.sidebar:
+            st.markdown(f"""
+            <div style="background:linear-gradient(135deg,#e3f2fd,#e8f5e9);border-radius:10px;
+                        padding:12px 14px;margin-bottom:10px;border-left:4px solid #1565c0;">
+                <div style="font-size:12px;color:#555;margin-bottom:4px;">Tài khoản đang dùng:</div>
+                <div style="font-weight:900;color:#1565c0;font-size:13px;word-break:break-all;">{email}</div>
+                <div style="margin-top:4px;font-size:12px;color:#2e7d32;">Phân quyền: {role}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("🔙 Đăng xuất", use_container_width=True, key="btn_logout_sidebar"):
+                st.session_state.pop("user_email", None)
+                st.rerun()
+        return  # OK, tiếp tục render
+
+    # Chưa đăng nhập → hiển thị trang đăng nhập
+    st.markdown("""
+    <style>
+    .login-box {
+        max-width: 440px;
+        margin: 80px auto 0 auto;
+        background: linear-gradient(135deg, #1a237e 0%, #283593 60%, #1565c0 100%);
+        border-radius: 18px;
+        padding: 44px 40px 36px 40px;
+        box-shadow: 0 8px 40px rgba(21,101,192,0.35);
+        text-align: center;
+    }
+    .login-box h1 { color: #fff; font-size: 1.7em; margin-bottom: 6px; }
+    .login-box p  { color: #b3c7f7; font-size: 14px; margin-bottom: 28px; }
+    </style>
+    <div class="login-box">
+        <div style="font-size:56px;margin-bottom:12px;">📡</div>
+        <h1>Hệ Thống Tra Cứu Hợp Đồng</h1>
+        <p>Vui lòng nhập Gmail của bạn để đăng nhập</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_l, col_m, col_r = st.columns([1, 2, 1])
+    with col_m:
+        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+        with st.form(key="login_form"):
+            email_input = st.text_input(
+                "📧 Gmail của bạn:",
+                placeholder="example@gmail.com",
+                label_visibility="visible"
+            )
+            submitted = st.form_submit_button(
+                "🔓 VÀO HỀ THỐNG",
+                use_container_width=True,
+                type="primary"
+            )
+        if submitted:
+            clean = email_input.strip().lower()
+            if not clean:
+                st.error("⚠️ Vui lòng nhập email trước khi tiếp tục.")
+            else:
+                st.session_state["user_email"] = clean
+                st.rerun()
+    st.stop()
+
+check_auth()
+
+
 st.title("📡 Tra Cứu Hợp Đồng & Quản Lý Thanh Toán")
 
 TARGET_COLUMNS = [
@@ -1655,54 +1770,67 @@ if not df_source.empty:
             # Editor key thay đổi sau mỗi lần lưu → force refresh checkbox state
             _editor_key = f"editor_{_sess_key}_{st.session_state[_ctr_key]}"
 
-            _edited = st.data_editor(
-                _df_tracker,
-                column_config={
-                    "✅ Đã TT": st.column_config.CheckboxColumn(
-                        "✅ Đã TT",
-                        help="Tick = đã chuyển khoản | Bỏ tick = chưa TT",
-                        default=False,
-                        width="small",
-                    )
-                },
-                disabled=["Mã trạm","Số tiền (VNĐ)","Chủ nhà","Ngân hàng","Ngày TT"],
-                use_container_width=True,
-                hide_index=True,
-                key=_editor_key,
-            )
+            if is_ketoan():
+                # --- KẾ TOÁN: được phép tick và lưu ---
+                _edited = st.data_editor(
+                    _df_tracker,
+                    column_config={
+                        "✅ Đã TT": st.column_config.CheckboxColumn(
+                            "✅ Đã TT",
+                            help="Tick = đã chuyển khoản | Bỏ tick = chưa TT",
+                            default=False,
+                            width="small",
+                        )
+                    },
+                    disabled=["Mã trạm","Số tiền (VNĐ)","Chủ nhà","Ngân hàng","Ngày TT"],
+                    use_container_width=True,
+                    hide_index=True,
+                    key=_editor_key,
+                )
 
-            # Nút LƯU full-width — nổi bật, dễ bấm trên điện thoại
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            _btn_save = st.button(
-                "💾  LƯU & ÁP DỤNG TRẠNG THÁI THANH TOÁN",
-                use_container_width=True,
-                type="primary",
-                key=f"btn_save_{_sess_key}_{st.session_state[_ctr_key]}"
-            )
+                # Nút LƯU full-width — nổi bật, dễ bấm trên điện thoại
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                _btn_save = st.button(
+                    "💾  LƯU & ÁP DỤNG TRẠNG THÁI THANH TOÁN",
+                    use_container_width=True,
+                    type="primary",
+                    key=f"btn_save_{_sess_key}_{st.session_state[_ctr_key]}"
+                )
 
-            if _btn_save:
-                _new_paid = set()
-                for _, _er in _edited.iterrows():
-                    if _er.get("✅ Đã TT", False):
-                        _new_paid.add(str(_er["Mã trạm"]).strip())
+                if _btn_save:
+                    _new_paid = set()
+                    for _, _er in _edited.iterrows():
+                        if _er.get("✅ Đã TT", False):
+                            _new_paid.add(str(_er["Mã trạm"]).strip())
 
-                # Cập nhật session_state
-                st.session_state[_sess_key] = _new_paid
+                    # Cập nhật session_state
+                    st.session_state[_sess_key] = _new_paid
 
-                # Ghi ra JSON bền vững
-                _all_st = load_payment_status()
-                _all_st[_stime] = list(_new_paid)
-                _ok = save_payment_status(_all_st)
+                    # Ghi ra JSON bền vững
+                    _all_st = load_payment_status()
+                    _all_st[_stime] = list(_new_paid)
+                    _ok = save_payment_status(_all_st)
 
-                # Tăng counter để data_editor refresh checkbox đúng
-                st.session_state[_ctr_key] += 1
+                    # Tăng counter để data_editor refresh checkbox đúng
+                    st.session_state[_ctr_key] += 1
 
-                if _ok:
-                    st.success(f"✅ Đã lưu! {len(_new_paid)}/{_tot} trạm được đánh dấu ĐÃ thanh toán tháng {_mon}.")
-                else:
-                    st.error("❌ Lưu file thất bại! Kiểm tra quyền ghi trong thư mục app.")
+                    if _ok:
+                        st.success(f"✅ Đã lưu! {len(_new_paid)}/{_tot} trạm được đánh dấu ĐÃ thanh toán tháng {_mon}.")
+                    else:
+                        st.error("❌ Lưu file thất bại! Kiểm tra quyền ghi trong thư mục app.")
 
-                st.rerun()
+                    st.rerun()
+
+            else:
+                # --- NGƯỜI XEM: chỉ read-only, không được tick ---
+                st.info("🔒 Bạn có quyền **xem** danh sách thanh toán. Chỉ tài khoản kế toán mới có thể cập nhật trạng thái.")
+                st.dataframe(
+                    _df_tracker,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                # Dùng paid_set để tính _paid_in_ui (không có editor)
+                _edited = _df_tracker.copy()
 
             # ---- Tổng kết: tính từ data_editor đang hiển thị ----
             _paid_in_ui = set()
