@@ -33,10 +33,11 @@ def get_overdue_alert(f_source):
     Tính các trạm chưa thanh toán và trễ hạn.
     Kiểm tra cả THÁNG HIỆN TẠI và THÁNG TRƯỚC.
     Trạm tháng trước chưa TT sẽ có nhãn '[T.TRƯỚC]' kèm theo trong banner.
-    Trả về tuple (over6, over4, over2, over1).
+    Trả về dict {1: [...], 2: [...], ..., 7: [...], 8: [...]} (8 = quá >=8 ngày).
+    Mỗi phần tử trong list là tuple (label, days_late).
     """
     if f_source is None:
-        return [], [], [], []
+        return {d: [] for d in range(1, 9)}
 
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -69,7 +70,8 @@ def get_overdue_alert(f_source):
     df_curr_due = _load_due(curr_month_str)
     df_prev_due = _load_due(prev_month_str)
 
-    over6, over4, over2, over1 = [], [], [], []
+    # Phân loại từng ngày: key=1..7, key=8 là >=8 ngày
+    overdue_by_day = {d: [] for d in range(1, 9)}
 
     # Hàm xử lý chung: duyệt từng trạm, tính ngày trễ, phân loại
     # suffix = '' với tháng hiện tại, '[T.TRƯỚC]' với tháng trước
@@ -87,49 +89,58 @@ def get_overdue_alert(f_source):
                                 hour=0, minute=0, second=0, microsecond=0)
                 days_late = (today - due_date).days
                 label     = f"{ma} {suffix}".strip() if suffix else ma
-                if days_late >= 6:
-                    over6.append((label, days_late))
-                elif days_late >= 4:
-                    over4.append((label, days_late))
-                elif days_late >= 2:
-                    over2.append((label, days_late))
-                elif days_late >= 1:
-                    over1.append((label, days_late))
+                if days_late >= 1:
+                    bucket = min(days_late, 8)  # 8 đại diện cho >=8 ngày
+                    overdue_by_day[bucket].append((label, days_late))
             except Exception:
                 pass
 
     _process(df_curr_due, paid_curr)                 # tháng hiện tại
     _process(df_prev_due, paid_prev, '[T.TRƯỚC]')    # tháng trước, ghi chú rõ
 
-    # Sắp xếp giảm dần theo số ngày trễ
-    for lst in [over6, over4, over2, over1]:
+    # Sắp xếp giảm dần theo số ngày trễ trong mỗi nhóm
+    for lst in overdue_by_day.values():
         lst.sort(key=lambda x: -x[1])
-    return over6, over4, over2, over1
+    return overdue_by_day
 
 
 
 def render_overdue_banner(f_source):
     """Hiển thị banner chạy chữ cảnh báo trạm trễ thanh toán (nếu có)."""
-    over6, over4, over2, over1 = get_overdue_alert(f_source)
+    overdue_by_day = get_overdue_alert(f_source)
 
-    if not over6 and not over4 and not over2 and not over1:
+    total_overdue = sum(len(v) for v in overdue_by_day.values())
+    if total_overdue == 0:
         return  # không có trạm nào trễ → không hiển thị gì
 
-    parts = []
-    if over6:
-        tram_list = '  |  '.join([f"{m} ({d} ngày)" for m, d in over6])
-        parts.append(f"🔴 QUÁ 6 NGÀY — {len(over6)} TRẠM: {tram_list}")
-    if over4:
-        tram_list = '  |  '.join([f"{m} ({d} ngày)" for m, d in over4])
-        parts.append(f"🟠 QUÁ 4 NGÀY — {len(over4)} TRẠM: {tram_list}")
-    if over2:
-        tram_list = '  |  '.join([f"{m} ({d} ngày)" for m, d in over2])
-        parts.append(f"🟡 QUÁ 2 NGÀY — {len(over2)} TRẠM: {tram_list}")
-    if over1:
-        tram_list = '  |  '.join([f"{m} (1 ngày)" for m, _ in over1])
-        parts.append(f"⚪ TRỄ 1 NGÀY — {len(over1)} TRẠM: {tram_list}")
+    # Màu sắc theo mức độ nghiêm trọng
+    day_config = {
+        1: ("⚪", "QUÁ 1 NGÀY"),
+        2: ("🟡", "QUÁ 2 NGÀY"),
+        3: ("🟡", "QUÁ 3 NGÀY"),
+        4: ("🟠", "QUÁ 4 NGÀY"),
+        5: ("🟠", "QUÁ 5 NGÀY"),
+        6: ("🔴", "QUÁ 6 NGÀY"),
+        7: ("🔴", "QUÁ 7 NGÀY"),
+        8: ("🆘", "QUÁ ≥8 NGÀY"),
+    }
 
-    total_overdue = len(over6) + len(over4) + len(over2) + len(over1)
+    parts = []
+    # Hiển thị từ nặng nhất (8) xuống nhẹ nhất (1)
+    for day in range(8, 0, -1):
+        lst = overdue_by_day.get(day, [])
+        if not lst:
+            continue
+        icon, label = day_config[day]
+        count = len(lst)
+        if day == 8:
+            # Nhóm >=8 ngày: ghi rõ tên trạm + số ngày
+            detail = '  |  '.join([f"{m} ({d} ngày)" for m, d in lst])
+            parts.append(f"{icon} {label} — {count} TRẠM: {detail}")
+        else:
+            # Các nhóm 1-7 ngày: chỉ liệt số trạm (không ghi tên)
+            parts.append(f"{icon} {label} — {count} TRẠM")
+
     separator = "    ★    "
     scroll_text = separator.join(parts)
     full_text = f"⚠️ CẢNH BÁO TRỄ THANH TOÁN — TỔNG {total_overdue} TRẠM CHƯA TT:      {scroll_text}      "
@@ -1451,6 +1462,9 @@ if not df_source.empty:
 
     # ------------ TAB 5: CÚ PHÁP CHUYỂN KHOẢN NH ------------
     with tab5:
+        # --- BANNER CẢNH BÁO TRỄ THANH TOÁN (hiển thị đầu Tab 5) ---
+        render_overdue_banner(DEFAULT_FILE if DEFAULT_FILE else uploaded_file)
+
         st.markdown("### 💸 Tự Động Hóa Cú Pháp Chuyển Khoản Ngân Hàng")
 
         # --- FORM TRA CỨU ---
