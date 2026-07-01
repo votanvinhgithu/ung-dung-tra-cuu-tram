@@ -5,12 +5,49 @@ import os
 import json
 from datetime import datetime, timedelta
 import re
+import requests
 
-# --- HÀM LƯU / ĐỌC TRẠNG THÁI THANH TOÁN (JSON) ---
-PAYMENT_STATUS_FILE = "payment_status.json"
+# --- HÀM LƯU / ĐỌC TRẠNG THÁI THANH TOÁN (GITHUB GIST) ---
+# Dữ liệu được lưu bền vững trên GitHub Gist, không bị mất khi Streamlit Cloud restart.
+# Nếu chưa cấu hình GIST_TOKEN/GIST_ID → fallback sang file JSON local (dev mode).
+PAYMENT_STATUS_FILE = "payment_status.json"   # chỉ dùng khi chạy local/dev
 
-def load_payment_status():
-    """Đọc file JSON lưu trạng thái thanh toán. Trả về dict {MM_YYYY: [list mã trạm đã TT]}."""
+def _get_gist_config():
+    """Trả về (token, gist_id) từ st.secrets. Nếu không có → ('', '')."""
+    try:
+        token   = str(st.secrets.get("GIST_TOKEN", "")).strip()
+        gist_id = str(st.secrets.get("GIST_ID", "")).strip()
+        return token, gist_id
+    except Exception:
+        return "", ""
+
+@st.cache_data(ttl=30)   # cache 30 giây để tránh gọi GitHub API liên tục
+def _fetch_gist_content(gist_id: str, token: str) -> dict:
+    """Gọi GitHub Gist API để lấy nội dung JSON. Trả về dict hoặc {}."""
+    try:
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+        r = requests.get(f"https://api.github.com/gists/{gist_id}", headers=headers, timeout=10)
+        if r.status_code == 200:
+            files = r.json().get("files", {})
+            # Lấy file đầu tiên trong Gist (tên không quan trọng)
+            for fname, fdata in files.items():
+                content = fdata.get("content", "{}")
+                return json.loads(content)
+    except Exception:
+        pass
+    return {}
+
+def load_payment_status() -> dict:
+    """
+    Đọc trạng thái thanh toán.
+    - Ưu tiên: GitHub Gist (nếu có GIST_TOKEN + GIST_ID trong st.secrets)
+    - Fallback: file payment_status.json local (dành cho dev/local)
+    Trả về dict {MM_YYYY: [list mã trạm đã TT]}.
+    """
+    token, gist_id = _get_gist_config()
+    if token and gist_id:
+        return _fetch_gist_content(gist_id, token)
+    # --- Fallback local ---
     if os.path.exists(PAYMENT_STATUS_FILE):
         try:
             with open(PAYMENT_STATUS_FILE, "r", encoding="utf-8") as f:
@@ -19,13 +56,48 @@ def load_payment_status():
             return {}
     return {}
 
-def save_payment_status(status_dict):
-    """Ghi dict trạng thái thanh toán ra file JSON."""
+def save_payment_status(status_dict: dict) -> bool:
+    """
+    Ghi trạng thái thanh toán bền vững.
+    - Ưu tiên: GitHub Gist PATCH (nếu có GIST_TOKEN + GIST_ID)
+    - Fallback: ghi file JSON local
+    Trả về True nếu thành công, False nếu thất bại.
+    """
+    token, gist_id = _get_gist_config()
+    if token and gist_id:
+        try:
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+            }
+            # Gist chỉ có 1 file duy nhất: payment_status.json
+            payload = {
+                "files": {
+                    "payment_status.json": {
+                        "content": json.dumps(status_dict, ensure_ascii=False, indent=2)
+                    }
+                }
+            }
+            r = requests.patch(
+                f"https://api.github.com/gists/{gist_id}",
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=15
+            )
+            if r.status_code in (200, 201):
+                # Xóa cache để lần đọc tiếp theo lấy dữ liệu mới nhất
+                _fetch_gist_content.clear()
+                return True
+            return False
+        except Exception:
+            return False
+    # --- Fallback local ---
     try:
         with open(PAYMENT_STATUS_FILE, "w", encoding="utf-8") as f:
             json.dump(status_dict, f, ensure_ascii=False, indent=2)
         return True
-    except Exception as e:
+    except Exception:
         return False
 
 def get_overdue_alert(f_source):
