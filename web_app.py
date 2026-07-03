@@ -7,6 +7,68 @@ from datetime import datetime, timedelta
 import re
 import requests
 
+# ============================================================
+# UTILITY DÙNG CHUNG CHO MỌI TÍNH TOÁN NGÀY THÁNG
+# - Dùng 1 nguồn "hôm nay" duy nhất để tránh lệch giờ
+# - Dùng 1 hàm parse ngày duy nhất để tránh ko nhất quán
+# ============================================================
+
+def _today() -> datetime:
+    """
+    Trả về 'hôm nay' (00:00:00) — gọi 1 lần duy nhất mỗi request để đồng bộ.
+    Streamlit Cloud chạy UTC; dùng replace() để loại thời gian dư.
+    """
+    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _parse_any_date(val) -> datetime | None:
+    """
+    Parse một giá trị ngày tháng linh hoạt, dùng chung toàn bộ app.
+    Thứ tự thử:
+      1. pd.Timestamp / datetime → chuẩn hoá về 00:00:00
+      2. '%m/%d/%Y' — format Excel Mỹ (mm/dd/yyyy) → ưu tiên 1 (toàn bộ dữ liệu Excel dùng format này)
+      3. '%d/%m/%Y' — format Việt Nam (dd/mm/yyyy)
+      4. '%Y-%m-%d' — ISO
+      5. '%m/%Y'    — chỉ tháng/năm (lấy ngày 1)
+    LƯU Ý: '%m/%d/%Y' được thử TRƯỚC vì toàn bộ dữ liệu Excel nhập theo chuẩn mm/dd/yyyy.
+    """
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, (pd.Timestamp, datetime)):
+        return val.replace(hour=0, minute=0, second=0, microsecond=0)
+    s = str(val).strip()
+    if s in ('', '-', 'nan', 'None', 'Không có', 'NaT'):
+        return None
+    for fmt in ('%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%d', '%m/%Y'):
+        try:
+            return datetime.strptime(s, fmt).replace(hour=0, minute=0, second=0, microsecond=0)
+        except ValueError:
+            pass
+    return None
+
+
+def _add_months(dt: datetime, months: float) -> datetime:
+    """
+    Cộng số tháng vào một datetime. Dùng lịch chính xác thay vì nhân 30.4375.
+    months có thể là float (vd 1.5 tháng = 45 ngày) — phần lẻ convert sang ngày.
+    """
+    full_months = int(months)
+    extra_days  = round((months - full_months) * 30)  # phần lẻ dùng 30 ngày/tháng
+    m = dt.month + full_months
+    year_add, month_new = divmod(m - 1, 12)
+    month_new += 1
+    year_new = dt.year + year_add
+    # Giữ ngày, nhưng clip vào số ngày hợp lệ của tháng đó
+    import calendar
+    max_day = calendar.monthrange(year_new, month_new)[1]
+    day_new = min(dt.day, max_day)
+    return dt.replace(year=year_new, month=month_new, day=day_new) + timedelta(days=extra_days)
+
 # --- HÀM LƯU / ĐỌC TRẠNG THÁI THANH TOÁN (GITHUB GIST) ---
 # Dữ liệu được lưu bền vững trên GitHub Gist, không bị mất khi Streamlit Cloud restart.
 # Nếu chưa cấu hình GIST_TOKEN/GIST_ID → fallback sang file JSON local (dev mode).
@@ -100,6 +162,7 @@ def save_payment_status(status_dict: dict) -> bool:
     except Exception:
         return False
 
+
 def get_overdue_alert(f_source):
     """
     Tính các trạm chưa thanh toán và trễ hạn.
@@ -111,7 +174,7 @@ def get_overdue_alert(f_source):
     if f_source is None:
         return {d: [] for d in range(1, 9)}
 
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = _today()   # 1 nguồn duy nhất cho toàn bộ hàm
 
     # --- Tháng hiện tại ---
     curr_month_str = today.strftime('%m/%Y')   # VD: 06/2026
@@ -155,26 +218,22 @@ def get_overdue_alert(f_source):
             if ma in paid_set:
                 continue  # đã TT → bỏ qua
 
-            due_str = str(row.get('Ngày tới hạn TT trong tháng', '')).strip()
-            try:
-                due_date  = datetime.strptime(due_str, '%m/%d/%Y').replace(
-                                hour=0, minute=0, second=0, microsecond=0)
-                days_late = (today - due_date).days
-                label     = f"{ma} {suffix}".strip() if suffix else ma
-                if days_late >= 1:
-                    bucket = min(days_late, 8)  # 8 đại diện cho >=8 ngày
-                    overdue_by_day[bucket].append((label, days_late))
-            except Exception:
-                pass
+            due_date = _parse_any_date(row.get('Ngày tới hạn TT trong tháng', ''))
+            if due_date is None:
+                continue
+            days_late = (today - due_date).days
+            label     = f"{ma} {suffix}".strip() if suffix else ma
+            if days_late >= 1:
+                bucket = min(days_late, 8)  # 8 đại diện cho >=8 ngày
+                overdue_by_day[bucket].append((label, days_late))
 
     _process(df_curr_due, paid_curr)                 # tháng hiện tại
-    _process(df_prev_due, paid_prev, '[T.TRƯỚC]')    # tháng trước, ghi chú rõ
+    _process(df_prev_due, paid_prev, '[T.TRƯỜC]')    # tháng trước, ghi chú rõ
 
     # Sắp xếp giảm dần theo số ngày trễ trong mỗi nhóm
     for lst in overdue_by_day.values():
         lst.sort(key=lambda x: -x[1])
     return overdue_by_day
-
 
 
 def render_overdue_banner(f_source):
@@ -205,13 +264,9 @@ def render_overdue_banner(f_source):
             continue
         icon, label = day_config[day]
         count = len(lst)
-        if day == 8:
-            # Nhóm >=8 ngày: ghi rõ tên trạm + số ngày
-            detail = '  |  '.join([f"{m} ({d} ngày)" for m, d in lst])
-            parts.append(f"{icon} {label} — {count} TRẠM: {detail}")
-        else:
-            # Các nhóm 1-7 ngày: chỉ liệt số trạm (không ghi tên)
-            parts.append(f"{icon} {label} — {count} TRẠM")
+        # LIỆT KÊ TÊN TRẠM cho TẤT CẢ nhóm (format: HCMxxxx; SGNyyy; ...)
+        tram_names = '; '.join([f"{m} ({d}ngày)" for m, d in lst])
+        parts.append(f"{icon} {label} — {count} TRẠM: {tram_names}")
 
     separator = "    ★    "
     scroll_text = separator.join(parts)
@@ -276,7 +331,215 @@ def render_overdue_banner(f_source):
     </div>
     """, unsafe_allow_html=True)
 
+
+def get_expiry_alert(df_source):
+    """
+    Tính các trạm sắp hết hạn HĐ chủ nhà (trong vòng 6 tháng).
+    Dùng _parse_any_date() và _today() từ utility chung.
+    """
+    empty = {'het_han': [], 'le3': [], 'm4': [], 'm5': [], 'm6': []}
+    if df_source is None or df_source.empty:
+        return empty
+
+    today      = _today()
+    expiry_col = "Ngày hết hạn HĐ"
+    if expiry_col not in df_source.columns:
+        return empty
+
+    result = {'het_han': [], 'le3': [], 'm4': [], 'm5': [], 'm6': []}
+    for _, row in df_source.iterrows():
+        ma = str(row.get('mã trạm', '')).strip()
+        if not ma or ma.lower() in ('nan', ''):
+            continue
+        exp_dt = _parse_any_date(row.get(expiry_col, ''))
+        if exp_dt is None:
+            continue
+        diff_days = (exp_dt - today).days
+        mo = round(diff_days / 30.4375, 1)
+        if mo > 6:
+            continue
+        if mo <= 0:
+            result['het_han'].append((ma, mo))
+        elif mo <= 3:
+            result['le3'].append((ma, mo))
+        elif mo <= 4:
+            result['m4'].append((ma, mo))
+        elif mo <= 5:
+            result['m5'].append((ma, mo))
+        else:
+            result['m6'].append((ma, mo))
+
+    for k in result:
+        result[k].sort(key=lambda x: x[1])
+    return result
+
+
+def render_expiry_banner(df_source):
+    """Hiển thị banner chạy chữ cảnh báo trạm sắp hết hạn HĐ chủ nhà (nếu có)."""
+    expiry = get_expiry_alert(df_source)
+    total  = sum(len(v) for v in expiry.values())
+    if total == 0:
+        return
+
+    grp_cfg = [
+        ('het_han', '🚨', 'ĐÃ HẾT HẠN'),
+        ('le3',     '🔴', '≤3 THÁNG'),
+        ('m4',      '🟠', '4 THÁNG'),
+        ('m5',      '🟡', '5 THÁNG'),
+        ('m6',      '🟢', '6 THÁNG'),
+    ]
+
+    parts = []
+    for key, icon, label in grp_cfg:
+        lst = expiry.get(key, [])
+        if not lst:
+            continue
+        count = len(lst)
+        tram_names = '; '.join([f"{ma} ({mo:.1f}th)" for ma, mo in lst])
+        parts.append(f"{icon} {label} — {count} TRẠM: {tram_names}")
+
+    separator     = "    ★    "
+    scroll_text   = separator.join(parts)
+    full_text     = f"📅 CẢNH BÁO SẮP HẾT HẠN HĐ — TỔNG {total} TRẠM:      {scroll_text}      "
+    full_text_dbl = full_text + "        " + full_text
+    duration      = max(20, len(full_text) * 0.18)
+
+    st.markdown(f"""
+    <style>
+    @keyframes expiry-scroll {{
+        0%   {{ transform: translateX(0); }}
+        100% {{ transform: translateX(-50%); }}
+    }}
+    .expiry-ticker-wrap {{
+        width: 100%;
+        overflow: hidden;
+        background: linear-gradient(90deg, #0d1a00 0%, #1b3a00 40%, #0d1a00 100%);
+        border: 2px solid #ff6f00;
+        border-radius: 8px;
+        padding: 10px 0;
+        margin-bottom: 14px;
+        box-shadow: 0 0 12px rgba(255,111,0,0.5);
+    }}
+    .expiry-ticker-inner {{
+        display: inline-block;
+        white-space: nowrap;
+        animation: expiry-scroll {duration:.1f}s linear infinite;
+        will-change: transform;
+    }}
+    .expiry-ticker-inner span {{
+        font-size: 15px;
+        font-weight: 900;
+        color: #ffb300;
+        letter-spacing: 0.5px;
+        font-family: 'Courier New', monospace;
+    }}
+    .expiry-badge {{
+        display:inline-block;
+        background:#ff6f00;
+        color:white;
+        font-weight:900;
+        font-size:13px;
+        padding:2px 10px;
+        border-radius:12px;
+        margin-right:10px;
+        vertical-align:middle;
+        animation: pulse-exp 1s ease-in-out infinite alternate;
+    }}
+    @keyframes pulse-exp {{
+        from {{ box-shadow: 0 0 4px #ff6f00; }}
+        to   {{ box-shadow: 0 0 14px #ffb300, 0 0 4px #ff6f00; }}
+    }}
+    </style>
+    <div class="expiry-ticker-wrap">
+        <span class="expiry-badge">📅 HẾT HẠN HĐ</span>
+        <div class="expiry-ticker-inner">
+            <span>{full_text_dbl}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 st.set_page_config(page_title="Hệ Thống Tra Cứu Hợp Đồng", page_icon="📡", layout="wide")
+
+# =============================================================
+
+def get_contract_overrun_warnings(df_due):
+    """
+    Kiểm tra các trạm có chu kỳ thanh toán vượt qua ngày hết hạn HĐ.
+    Dùng _parse_any_date() và _add_months() từ utility chung — không xấp xỉ 30.4375.
+    """
+    warnings = []
+    if df_due is None or df_due.empty:
+        return warnings
+
+    for _, row in df_due.iterrows():
+        ma = str(row.get('mã trạm', '')).strip()
+        if not ma or ma.lower() in ('nan', ''):
+            continue
+
+        due_date = _parse_any_date(row.get('Ngày tới hạn TT trong tháng', ''))
+        if due_date is None:
+            continue
+
+        exp_date = _parse_any_date(row.get('Ngày hết hạn HĐ', ''))
+        if exp_date is None:
+            continue
+
+        # Chu kỳ thanh toán → số tháng
+        raw_cycle  = str(row.get('chu kỳ thanh toán cho chủ nhà', '1')).strip().lower()
+        multiplier = 12.0 if 'năm' in raw_cycle else 1.0
+        try:
+            digits     = re.sub(r'[^\d.]', '', raw_cycle)
+            cycle_val  = float(digits) if digits else 1.0
+            if cycle_val == 0:
+                cycle_val = 1.0
+        except:
+            cycle_val = 1.0
+        cycle_months = cycle_val * multiplier
+
+        # Dùng _add_months() — chính xác theo lịch, không nhân 30.4375
+        payment_end = _add_months(due_date, cycle_months)
+
+        if payment_end > exp_date:
+            lbl = f"{int(cycle_months)} tháng" if cycle_months == int(cycle_months) else f"{cycle_months:.1f} tháng"
+            warnings.append({
+                'ma':           ma,
+                'due':          due_date.strftime('%d/%m/%Y'),
+                'pay_end':      payment_end.strftime('%d/%m/%Y'),
+                'contract_end': exp_date.strftime('%d/%m/%Y'),
+                'cycle':        lbl,
+            })
+    return warnings
+
+
+def render_contract_overrun_warning(df_due):
+    """Hiển thị cảnh báo chu kỳ TT vượt hạn HĐ nếu có."""
+    warns = get_contract_overrun_warnings(df_due)
+    if not warns:
+        return
+    for w in warns:
+        st.markdown(f"""
+        <div style="
+            background: linear-gradient(135deg,#fff8e1,#fff3cd);
+            border-left: 5px solid #f9a825;
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin: 8px 0;
+            box-shadow: 0 2px 8px rgba(249,168,37,0.25);
+        ">
+            <div style="font-size:15px;font-weight:900;color:#e65100;margin-bottom:6px;">
+                ⚠️ TRẠM <span style='color:#c62828;'>{w['ma']}</span> &nbsp;—&nbsp;
+                Chu kỳ TT {w['cycle']} từ ngày <b>{w['due']}</b>
+                sẽ kết thúc vào <b>{w['pay_end']}</b>,
+                nhưng HĐ chủ nhà chỉ còn đến ngày <b style='color:#c62828;'>{w['contract_end']}</b>.
+            </div>
+            <div style="font-size:14px;color:#5d4037;line-height:1.6;">
+                📌 <b>Chu kỳ thanh toán vượt thời hạn kết thúc hợp đồng,
+                anh có muốn thanh toán chủ nhà hay không?</b><br>
+                Nếu đã ký gia hạn hợp đồng với chủ nhà, anh cần
+                <b>update thời hạn hiệu lực hợp đồng mới nhất</b> trên file dữ liệu.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # =============================================================
 # BẢO MẬT: KIỂM SOÁT TRUY CẬP THEO GMAIL
@@ -401,7 +664,8 @@ TARGET_COLUMNS = [
     "Ngày ký HĐ Chủ nhà_trên HĐ", "Ngày hết hạn HĐ", 
     "Chủ nhà + SĐT", "giá thuê chủ nhà", "Giá Viettel Thuê", 
     "Giá MB thuê", "Giá Vina thuê", "chu kỳ thanh toán cho chủ nhà", 
-    "Số HĐ với chủ nhà", "Số TK chủ nhà", "Chủ tài khoản", "Tên Ngân Hàng"
+    "Số HĐ với chủ nhà", "Số TK chủ nhà", "Chủ tài khoản", "Tên Ngân Hàng",
+    "Link Hồ Sơ Drive"
 ]
 
 EXTRA_PAY_COLS = [
@@ -634,16 +898,17 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
 def load_revenue_data_v2(file_source, target_month_str):
     try:
         parts = str(target_month_str).strip().split('/')
+        now = _today()   # gọi 1 lần — tránh lệch nếu qua đầu tháng đúng lúc thực thi
         if len(parts) == 2:
             try:
                 target_month = int(parts[0])
                 target_year  = int(parts[1])
             except:
-                target_month = datetime.now().month
-                target_year = datetime.now().year
+                target_month = now.month
+                target_year  = now.year
         else:
-            target_month = datetime.now().month
-            target_year = datetime.now().year
+            target_month = now.month
+            target_year  = now.year
             
         if hasattr(file_source, 'seek'):
             file_source.seek(0)
@@ -1240,15 +1505,30 @@ def render_cards(df_to_render, is_payment_tab=False, columns_to_show=None):
             for col in columns_to_show:
                 if col not in row: continue
                 val = row[col]
+                # --- Nút Drive đặc biệt ---
+                if col == "Link Hồ Sơ Drive":
+                    link = str(val).strip() if val and str(val).strip() not in ("", "-", "nan") else ""
+                    if link:
+                        st.markdown(
+                            f"""<a href="{link}" target="_blank" style="
+                                display:inline-block;background:linear-gradient(135deg,#1a73e8,#0d47a1);
+                                color:white;font-weight:900;font-size:14px;padding:8px 18px;
+                                border-radius:8px;text-decoration:none;margin:6px 0;
+                                box-shadow:0 2px 8px rgba(26,115,232,0.4);
+                            ">📂 Xem Hồ Sơ Drive</a>""",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown("**Link Hồ Sơ Drive:** &nbsp;&nbsp; *(Chưa có)*")
                 # High-light các cột thanh toán
-                if col in EXTRA_PAY_COLS:
+                elif col in EXTRA_PAY_COLS:
                     st.markdown(f"<span style='color:#a8d1ff;'>**{col}:** &nbsp;&nbsp; {val}</span>", unsafe_allow_html=True)
                 else:
                     if pd.isna(val) or str(val).strip() == "": val = "-"
                     # Định dạng số tiền nếu là kiểu số
                     if isinstance(val, (int, float)) and not pd.isna(val):
                         val = f"{val:,.0f}"
-                    st.markdown(f"**{col}:** &nbsp;&nbsp; {val}") 
+                    st.markdown(f"**{col}:** &nbsp;&nbsp; {val}")
                     
 # --- GIAO DIỆN HIỂN THỊ CHÍNH ---
 if not df_source.empty:
@@ -1304,7 +1584,17 @@ if not df_source.empty:
                 """, unsafe_allow_html=True)
                 
                 html_report_1 = df_clean_tab1.to_html(index=False, classes="red-header-table-general", escape=False)
-                st.markdown(html_report_1, unsafe_allow_html=True)
+                # Chuyển link Drive thành nút bấm HTML trong bảng
+                import re as _re
+                def _linkify_drive(html_str):
+                    # Tìm ô <td> chứa URL Drive và thay bằng nút bấm
+                    def _replace_cell(m):
+                        url = m.group(1).strip()
+                        if url.startswith('http'):
+                            return f'<td><a href="{url}" target="_blank" style="background:#1a73e8;color:white;padding:4px 12px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:12px;">📂 Drive</a></td>'
+                        return m.group(0)
+                    return _re.sub(r'<td>(https?://[^<]+)</td>', _replace_cell, html_str)
+                st.markdown(_linkify_drive(html_report_1), unsafe_allow_html=True)
                 
                 st.markdown("---")
                 st.markdown("### 🏷️ Chi Tiết Dạng Thẻ (Dành cho Vuốt Trên Điện Thoại)")
@@ -1401,6 +1691,9 @@ if not df_source.empty:
                 colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount:,.0f} VNĐ")
                 
                 st.markdown("---")
+                # --- CẢNH BÁO CHU KỲ TT VƯợT HẠN HĐ ---
+                render_contract_overrun_warning(df_pay_display)
+
                 st.markdown('<h3 style="color:red; font-weight:bold;">📊 Tổng Hợp Lưới Ngang (Báo cáo Lọc Dạng Bảng)</h3>', unsafe_allow_html=True)
                 df_clean_tab2 = df_pay_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
                 # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
@@ -1743,6 +2036,7 @@ if not df_source.empty:
                         # Lưu vào session_state để persist qua mọi rerun
                         st.session_state['t5_df_clean']   = _df_clean5
                         st.session_state['t5_df_amounts'] = _df_due5[["mã trạm","__raw_amount__"]].copy()
+                        st.session_state['t5_df_due_full'] = _df_due5.copy()  # lưu full để check overrun
                         st.session_state['t5_month']      = month_input_tab5
                         st.session_state['t5_safe_time']  = month_input_tab5.replace('/', '_')
                         st.session_state['t5_total']      = len(_df_clean5)
@@ -1762,6 +2056,10 @@ if not df_source.empty:
             _tamt = st.session_state['t5_total_amt']
 
             st.success(f"🔥 **Tháng {_mon}: {_tot} hợp đồng cần thanh toán — Tổng: {_tamt:,.0f} VNĐ**")
+
+            # --- CẢNH BÁO CHU KỲ TT VƯỢT HẠN HĐ (hiện ngay trước bảng) ---
+            _df_due_full5 = st.session_state.get('t5_df_due_full', _dc)
+            render_contract_overrun_warning(_df_due_full5)
 
             # ---- Bảng cú pháp HTML (cuộn ngang được trên mobile) ----
             st.markdown('<h3 style="color:red; font-weight:bold;">🏷️ Danh Sách Cú Pháp Chuyển Khoản</h3>', unsafe_allow_html=True)
@@ -2826,10 +3124,13 @@ if not df_source.empty:
 
     # ------------ TAB 9: HẾT HẠN HĐ CHỦ NHÀ ------------
     with tab9:
+        # --- BANNER CẢNH BÁO SẮP HẾT HẠN HĐ ---
+        render_expiry_banner(df_source)
+
         st.markdown("### ⏰ Ranking Trạm Sắp Hết Hạn Hợp Đồng Chủ Nhà")
         st.info("📋 Hệ thống tự động đọc cột **Ngày ký HĐ** và **Ngày hết hạn HĐ** để tính số tháng còn lại. Trạm có thời hạn ngắn nhất hiển thị trên cùng để anh ưu tiên đàm phán gia hạn.")
 
-        today_t9 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_t9 = _today()   # dùng utility chung
 
         # Các cột cần show theo mẫu hình đính kèm
         COLS_T9_SHOW = [
@@ -2844,32 +3145,18 @@ if not df_source.empty:
         # --- Lấy dữ liệu từ df_source (đã được enrich) ---
         df_t9 = df_source.copy()
 
-        # Chuẩn hoá cột ngày hết hạn
         expiry_col = "Ngày hết hạn HĐ"
         sign_col   = "Ngày ký HĐ Chủ nhà_trên HĐ"
 
-        # Parse ngày hết hạn linh hoạt (có thể mm/dd/yyyy hoặc datetime)
-        def parse_date_flexible(val):
-            if pd.isna(val) or str(val).strip() in ("", "-", "nan", "None"):
-                return None
-            if isinstance(val, (pd.Timestamp, datetime)):
-                return val.replace(hour=0, minute=0, second=0, microsecond=0)
-            s = str(val).strip()
-            for fmt in ("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d", "%m/%Y"):
-                try:
-                    return datetime.strptime(s, fmt)
-                except ValueError:
-                    pass
-            return None
-
-        df_t9["__expiry_dt__"] = df_t9[expiry_col].apply(parse_date_flexible)
+        # Dùng _parse_any_date() utility chung thay vì định nghĩa lại
+        df_t9["__expiry_dt__"] = df_t9[expiry_col].apply(_parse_any_date)
 
         # Tính số tháng còn lại (float, làm tròn 1 chữ số thập phân)
         def months_remaining(expiry_dt):
             if expiry_dt is None:
                 return None
             diff_days = (expiry_dt - today_t9).days
-            return round(diff_days / 30.4375, 1)  # 30.4375 = ngày TB/tháng
+            return round(diff_days / 30.4375, 1)
 
         df_t9["__months_left__"] = df_t9["__expiry_dt__"].apply(months_remaining)
 
