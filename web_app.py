@@ -227,8 +227,8 @@ def get_overdue_alert(f_source):
                 bucket = min(days_late, 8)  # 8 đại diện cho >=8 ngày
                 overdue_by_day[bucket].append((label, days_late))
 
-    _process(df_curr_due, paid_curr)                 # tháng hiện tại
-    _process(df_prev_due, paid_prev, '[T.TRƯỜC]')    # tháng trước, ghi chú rõ
+    _process(df_curr_due, paid_curr)                      # tháng hiện tại
+    _process(df_prev_due, paid_prev, '(tồn tháng trước)')  # tháng trước, ghi chú rõ
 
     # Sắp xếp giảm dần theo số ngày trễ trong mỗi nhóm
     for lst in overdue_by_day.values():
@@ -3180,11 +3180,11 @@ if not df_source.empty:
 
             # --- Metric tổng quan ---
             mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-            mc1.metric("🔥 Tổng trạm cần chú ý", f"{total_urgent} trạm")
-            mc2.metric("🚨 ≤ 3 tháng",  f"{cnt_le3} trạm")
-            mc3.metric("🟠 4 tháng",     f"{cnt_4} trạm")
-            mc4.metric("🟡 5 tháng",     f"{cnt_5} trạm")
-            mc5.metric("🟢 6 tháng",     f"{cnt_6} trạm")
+            mc1.metric("🔥 Tổng trạm cần chú ý",             f"{total_urgent} trạm")
+            mc2.metric("🚨 Hạn HĐ ≤ 3 tháng",               f"{cnt_le3} trạm")
+            mc3.metric("🟠 Hạn HĐ > 3 và ≤ 4 tháng",         f"{cnt_4} trạm")
+            mc4.metric("🟡 Hạn HĐ > 4 và ≤ 5 tháng",         f"{cnt_5} trạm")
+            mc5.metric("🟢 Hạn HĐ > 5 và ≤ 6 tháng",         f"{cnt_6} trạm")
 
             # CSS bảng chung - header đỏ đậm
             st.markdown("""
