@@ -2173,6 +2173,17 @@ if not df_source.empty:
                         if _er.get("✅ Đã TT", False):
                             _new_paid.add(str(_er["Mã trạm"]).strip())
 
+                    # --- FIX: Giữ lại các trạm đã tick trước đó nhưng KHÔNG
+                    # nằm trong danh sách đang hiển thị (do filter ngày/trạm).
+                    # Nếu không merge, nhấn Lưu sẽ xoá hết tick của trạm ngoài filter.
+                    _visible_stations = set(_dc["mã trạm"].astype(str).str.strip())
+                    _all_st_for_merge = load_payment_status()
+                    _prev_paid_all    = set(_all_st_for_merge.get(_stime, []))
+                    # Trạm đã tick trước đó nhưng đang bị ẩn (ngoài filter)
+                    _prev_paid_outside = _prev_paid_all - _visible_stations
+                    # Kết hợp: tick mới (trong filter) + tick cũ (ngoài filter)
+                    _new_paid = _new_paid | _prev_paid_outside
+
                     # Cập nhật session_state
                     st.session_state[_sess_key] = _new_paid
 
