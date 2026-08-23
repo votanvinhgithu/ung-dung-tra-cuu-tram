@@ -117,7 +117,10 @@ def _get_gist_config():
     except Exception:
         return "", ""
 
-@st.cache_data(ttl=30)   # cache 30 giây để tránh gọi GitHub API liên tục
+# Cache 3 phút: mỗi lần gọi GitHub mất ~0,9 giây nên đây là khâu chậm nhất khi tải trang.
+# An toàn vì save_payment_status() gọi .clear() ngay sau khi lưu — mọi người dùng
+# thấy trạng thái tick mới lập tức, không phải chờ hết hạn cache.
+@st.cache_data(ttl=180)
 def _fetch_gist_content(gist_id: str, token: str) -> dict:
     """Gọi GitHub Gist API để lấy nội dung JSON. Trả về dict hoặc {}."""
     try:
@@ -930,6 +933,29 @@ EXTRA_PAY_COLS = [
 ]
 
 DISPLAY_COLUMNS = TARGET_COLUMNS + EXTRA_PAY_COLS
+# Kéo "Ngày áp dụng giá mới" về nằm ngay sau "giá thuê chủ nhà_mới".
+# Nếu để nguyên, nó rơi xuống cuối danh sách — trên Tab 1 phải kéo ngang qua
+# 13 cột mới nhìn thấy, tưởng như app không hiện.
+if "Ngày áp dụng giá mới" in DISPLAY_COLUMNS and "giá thuê chủ nhà_mới" in DISPLAY_COLUMNS:
+    DISPLAY_COLUMNS.remove("Ngày áp dụng giá mới")
+    DISPLAY_COLUMNS.insert(DISPLAY_COLUMNS.index("giá thuê chủ nhà_mới") + 1,
+                           "Ngày áp dụng giá mới")
+
+
+def _order_price_columns(df):
+    """
+    Sắp xếp lại thứ tự cột của bảng kết quả: giá cũ → giá mới → ngày áp dụng
+    luôn đứng liền nhau. Dùng chung cho MỌI tab thay vì sửa riêng từng chỗ.
+    """
+    if df is None or len(df.columns) == 0:
+        return df
+    a, b = "giá thuê chủ nhà_mới", "Ngày áp dụng giá mới"
+    cols = list(df.columns)
+    if a in cols and b in cols and cols.index(b) != cols.index(a) + 1:
+        cols.remove(b)
+        cols.insert(cols.index(a) + 1, b)
+        df = df[cols]
+    return df
 
 def normalize_str(s):
     return str(s).strip().lower()
@@ -1283,7 +1309,14 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         # dùng để tính tiền. Nếu Sheet 2 chưa điền thì lấy tạm giá mới ở Sheet 1.
         if new_monthly > 0:
             formatted_new_price = f"{new_monthly:,.0f}"
+        elif info:
+            # Trạm CÓ trong Sheet 2 nhưng ô "Số tiền thuê/tháng_mới" bỏ trống
+            # → đúng là chưa có giá mới. KHÔNG lấy Sheet 1 nữa: cột giá mới bên
+            # Sheet 1 còn sót giá cũ đã áp dụng xong, hiện lên thành
+            # "giá mới = giá cũ" khiến tưởng nhầm trạm vừa được đàm phán lại.
+            formatted_new_price = "-"
         else:
+            # Trạm KHÔNG có mặt trong Sheet 2 → lấy tạm giá mới ghi ở Sheet 1
             formatted_new_price = "-"
             _s1_new = str(row.get("giá thuê chủ nhà_mới", "")).strip()
             if _s1_new and _s1_new.lower() not in ("-", "nan", ""):
@@ -1773,21 +1806,52 @@ def get_profit_report_data_exclude_ca_nhan(file_source, time_input_str, df_sourc
     
     return pd.DataFrame(records), excluded_set
 
-@st.cache_data(ttl=60) # Tự động xóa bộ nhớ đệm sau 60 giây để cập nhật dữ liệu mới từ GitHub
-def load_data_and_enrich_v3(file_source, target_month_str):
+def _source_version(file_source) -> str:
+    """
+    Dấu vân tay của file dữ liệu (thời điểm sửa + dung lượng).
+    Dùng làm một phần khoá cache: file Excel đổi thì cache tự hết hiệu lực ngay,
+    file không đổi thì giữ cache lâu — không phải đọc lại Excel mỗi phút.
+    """
     try:
-        if hasattr(file_source, 'seek'):
-            file_source.seek(0)
-        xl = pd.ExcelFile(file_source)
-        
-        # 1. ĐỌC SHEET 1: Chi Tiết HD
-        sheet_1_target = "Theo dõi HĐ_Chi tiết"
-        target_sheet_1 = next((s for s in xl.sheet_names if sheet_1_target.lower() in s.lower()), None)
-        if not target_sheet_1:
-            st.error(f"⚠️ Không tìm thấy sheet có chứa chữ '{sheet_1_target}' trong file Excel.")
-            return pd.DataFrame()
+        if isinstance(file_source, str) and os.path.exists(file_source):
+            s = os.stat(file_source)
+            return f"{s.st_mtime_ns}-{s.st_size}"
+    except Exception:
+        pass
+    return "upload"
 
-        df = pd.read_excel(file_source, sheet_name=target_sheet_1)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _read_source_sheets(file_source, version):
+    """
+    Đọc 2 sheet gốc ĐÚNG MỘT LẦN rồi dùng lại cho mọi tháng.
+    Trước đây mỗi tháng tra cứu lại mở file và đọc lại cả 2 sheet — banner cảnh báo
+    quét 6 tháng nên một lần tải trang phải đọc Excel 12 lượt cho cùng dữ liệu.
+    """
+    if hasattr(file_source, 'seek'):
+        file_source.seek(0)
+    xl = pd.ExcelFile(file_source)
+    n1 = next((s for s in xl.sheet_names if "theo dõi hđ_chi tiết" in s.lower()), None)
+    n2 = next((s for s in xl.sheet_names if "theo dõi thanh toán chủ nhà" in s.lower()), None)
+    df1 = pd.read_excel(xl, sheet_name=n1) if n1 else pd.DataFrame()
+    df2 = pd.read_excel(xl, sheet_name=n2) if n2 else pd.DataFrame()
+    return df1, df2, n1
+
+
+def load_data_and_enrich_v3(file_source, target_month_str):
+    """Vỏ bọc: tự gắn dấu vân tay file vào khoá cache rồi gọi hàm tính bên trong."""
+    return _load_data_and_enrich_cached(file_source, target_month_str,
+                                        _source_version(file_source))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_data_and_enrich_cached(file_source, target_month_str, version):
+    try:
+        # 1. LẤY 2 SHEET GỐC (đã được đọc sẵn và dùng chung, không đọc lại Excel)
+        df, df2_raw, target_sheet_1 = _read_source_sheets(file_source, version)
+        if not target_sheet_1:
+            st.error("⚠️ Không tìm thấy sheet có chứa chữ 'Theo dõi HĐ_Chi tiết' trong file Excel.")
+            return pd.DataFrame()
         available_cols = {normalize_str(col): col for col in df.columns}
         selected_actual = []
         for t_col in TARGET_COLUMNS:
@@ -1823,14 +1887,10 @@ def load_data_and_enrich_v3(file_source, target_month_str):
                 df_filtered[col] = df_filtered[col].dt.strftime('%m/%d/%Y')
         df_filtered = df_filtered.fillna("")
         
-        # 2. ĐỌC SHEET 2: LỊCH SỬ THANH TOÁN
-        sheet_2_target = "Theo dõi thanh toán chủ nhà"
-        target_sheet_2 = next((s for s in xl.sheet_names if sheet_2_target.lower() in s.lower()), None)
-        
-        df2 = pd.DataFrame()
-        if target_sheet_2:
-            df2 = pd.read_excel(file_source, sheet_name=target_sheet_2)
-            
+        # 2. SHEET 2: LỊCH SỬ THANH TOÁN (đã đọc sẵn ở trên)
+        df2 = df2_raw
+
+
         # Tách tháng năm từ người dùng nhập
         now = _today()
         t_month, t_year = now.month, now.year
@@ -1848,7 +1908,9 @@ def load_data_and_enrich_v3(file_source, target_month_str):
             df_filtered["__raw_amount__"] = 0.0
             df_filtered["__is_due_this_month__"] = False
             df_final = df_filtered
-            
+
+        # Xếp giá cũ → giá mới → ngày áp dụng liền nhau cho mọi bảng dùng df này
+        df_final = _order_price_columns(df_final)
         return df_final
     except Exception as e:
         st.error(f"⚠️ Có lỗi trong quá trình đọc Excel: {e}")
@@ -3345,7 +3407,8 @@ if not df_source.empty:
                         "mã trạm", lat_col, long_col, "Địa chỉ",
                         "Viettel", "Vina", "Mobi", "Chủ nhà + SĐT",
                         "Ngày hết hạn HĐ", "Ngày hết hạn hợp đồng_mới",
-                        "giá thuê chủ nhà", "giá thuê chủ nhà_mới"
+                        "giá thuê chủ nhà", "giá thuê chủ nhà_mới",
+                        "Ngày áp dụng giá mới"
                     ]
                     existing_show = [c for c in cols_show if c in df_map_filtered.columns]
                     df_map_show = df_map_filtered[existing_show].copy()
@@ -3771,6 +3834,7 @@ if not df_source.empty:
             "Ngày hết hạn hợp đồng_mới",   # Ngày HĐ gia hạn mới nhất
             "Chủ nhà + SĐT",
             "giá thuê chủ nhà", "giá thuê chủ nhà_mới",  # Giá thuê mới sau đàm phán
+            "Ngày áp dụng giá mới",                      # mốc bắt đầu tính giá mới
             "Giá Viettel Thuê", "Giá MB thuê", "Giá Vina thuê",
             "chu kỳ thanh toán cho chủ nhà"
         ]
