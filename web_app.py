@@ -6,6 +6,12 @@ import json
 from datetime import datetime, timedelta
 import re
 import requests
+from zoneinfo import ZoneInfo
+
+# Múi giờ Việt Nam — BẮT BUỘC khi chạy trên Streamlit Cloud (server chạy UTC, lệch 7 tiếng).
+# Nếu không ép múi giờ, từ 17h00 đến 24h00 giờ VN server sẽ hiểu là "hôm qua"
+# → tính sai số ngày trễ thanh toán và sai tháng mặc định ở các ô nhập liệu.
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 # ============================================================
 # UTILITY DÙNG CHUNG CHO MỌI TÍNH TOÁN NGÀY THÁNG
@@ -15,10 +21,11 @@ import requests
 
 def _today() -> datetime:
     """
-    Trả về 'hôm nay' (00:00:00) — gọi 1 lần duy nhất mỗi request để đồng bộ.
-    Streamlit Cloud chạy UTC; dùng replace() để loại thời gian dư.
+    Trả về 'hôm nay' (00:00:00) theo GIỜ VIỆT NAM — gọi 1 lần duy nhất mỗi request.
+    Streamlit Cloud chạy UTC nên phải quy đổi về Asia/Ho_Chi_Minh trước,
+    sau đó bỏ tzinfo để so sánh được với các datetime naive do _parse_any_date() trả về.
     """
-    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return datetime.now(VN_TZ).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
 
 def _parse_any_date(val) -> datetime | None:
@@ -335,15 +342,18 @@ def render_overdue_banner(f_source):
 def get_expiry_alert(df_source):
     """
     Tính các trạm sắp hết hạn HĐ chủ nhà (trong vòng 6 tháng).
+    Ưu tiên cột "Ngày hết hạn hợp đồng_mới" nếu có dữ liệu,
+    fallback về "Ngày hết hạn HĐ" nếu không.
     Dùng _parse_any_date() và _today() từ utility chung.
     """
     empty = {'het_han': [], 'le3': [], 'm4': [], 'm5': [], 'm6': []}
     if df_source is None or df_source.empty:
         return empty
 
-    today      = _today()
-    expiry_col = "Ngày hết hạn HĐ"
-    if expiry_col not in df_source.columns:
+    today       = _today()
+    old_col     = "Ngày hết hạn HĐ"
+    new_col     = "Ngày hết hạn hợp đồng_mới"
+    if old_col not in df_source.columns:
         return empty
 
     result = {'het_han': [], 'le3': [], 'm4': [], 'm5': [], 'm6': []}
@@ -351,7 +361,13 @@ def get_expiry_alert(df_source):
         ma = str(row.get('mã trạm', '')).strip()
         if not ma or ma.lower() in ('nan', ''):
             continue
-        exp_dt = _parse_any_date(row.get(expiry_col, ''))
+        # Ưu tiên ngày mới nếu có
+        exp_dt = None
+        raw_new = str(row.get(new_col, '')).strip()
+        if raw_new and raw_new not in ('-', 'nan', ''):
+            exp_dt = _parse_any_date(raw_new)
+        if exp_dt is None:
+            exp_dt = _parse_any_date(row.get(old_col, ''))
         if exp_dt is None:
             continue
         diff_days = (exp_dt - today).days
@@ -480,7 +496,11 @@ def get_contract_overrun_warnings(df_due):
         if due_date is None:
             continue
 
-        exp_date = _parse_any_date(row.get('Ngày hết hạn HĐ', ''))
+        # Ưu tiên ngày mới nếu có
+        _raw_new_exp = str(row.get('Ngày hết hạn hợp đồng_mới', '')).strip()
+        exp_date = _parse_any_date(_raw_new_exp) if _raw_new_exp and _raw_new_exp not in ('-', 'nan', '') else None
+        if exp_date is None:
+            exp_date = _parse_any_date(row.get('Ngày hết hạn HĐ', ''))
         if exp_date is None:
             continue
 
@@ -661,8 +681,11 @@ st.title("📡 Tra Cứu Hợp Đồng & Quản Lý Thanh Toán")
 TARGET_COLUMNS = [
     "mã trạm", "Q/H", "long thuê", "lat thuê", "Địa chỉ", 
     "Viettel", "Vina", "Mobi", 
-    "Ngày ký HĐ Chủ nhà_trên HĐ", "Ngày hết hạn HĐ", 
-    "Chủ nhà + SĐT", "giá thuê chủ nhà", "Giá Viettel Thuê", 
+    "Ngày ký HĐ Chủ nhà_trên HĐ", "Ngày hết hạn HĐ",
+    "Ngày hết hạn hợp đồng_mới",   # Ngày HĐ gia hạn mới nhất (ưu tiên hơn cột cũ)
+    "Chủ nhà + SĐT", "giá thuê chủ nhà",
+    "giá thuê chủ nhà_mới",         # Giá thuê mới sau đàm phán (tên khớp cột Excel)
+    "Giá Viettel Thuê", 
     "Giá MB thuê", "Giá Vina thuê", "chu kỳ thanh toán cho chủ nhà", 
     "Số HĐ với chủ nhà", "Số TK chủ nhà", "Chủ tài khoản", "Tên Ngân Hàng",
     "Link Hồ Sơ Drive"
@@ -753,9 +776,11 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             if ma_tram_col is None: ma_tram_col = c
             
     # Ưu tiên tìm cột "thuê/tháng", "số tiền thuê/tháng" ở sheet 2
+    # LƯU Ý: chỉ khớp cột KHÔNG có hậu tố "_mới" để tránh nhầm với cột giá mới
     for c in df_pay.columns:
         c_low = str(c).strip().lower()
-        if "thuê/tháng" in c_low or "số tiền thuê" in c_low or "tiền thuê/tháng" in c_low:
+        if ("thuê/tháng" in c_low or "số tiền thuê" in c_low or "tiền thuê/tháng" in c_low) \
+                and "_mới" not in c_low and "mới" not in c_low:
             amount_col = c
             break
     # Nếu không có "thuê/tháng" thì rớt xuống tìm cột "số tiền"
@@ -765,22 +790,62 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             if "số tiền thanh toán" in c_low or "số tiền" in c_low:
                 amount_col = c
                 break
-                
+
+    # ── PHÁT HIỆN 2 CỘT MỚI (hỗ trợ kỳ chuyển tiếp 2 mức giá) ──────────────
+    # Cột giá thuê mới: "Số tiền thuê/tháng_mới"
+    new_amount_col = None
+    for c in df_pay.columns:
+        c_low = str(c).strip().lower()
+        if ("thuê/tháng_mới" in c_low or "tiền thuê_mới" in c_low
+                or "thuê/tháng mới" in c_low or "tiền thuê/tháng_mới" in c_low):
+            new_amount_col = c
+            break
+
+    # Cột ngày bắt đầu áp dụng giá mới: "Ngày bắt đầu tính giá thuê mới"
+    new_price_date_col = None
+    for c in df_pay.columns:
+        c_low = str(c).strip().lower()
+        if ("bắt đầu tính giá" in c_low or "bắt đầu tính tính giá" in c_low
+                or ("ngày bắt đầu" in c_low and "giá" in c_low)
+                or ("bắt đầu" in c_low and "giá thuê" in c_low)):
+            new_price_date_col = c
+            break
+    # ─────────────────────────────────────────────────────────────────────────
+
     if not ma_tram_col: return df_main # Bỏ qua nếu sheet 2 không có cột mã trạm
-    
-    date_cols = [c for c in df_pay.columns if c != ma_tram_col and c != amount_col]
+
+    # Loại tất cả cột đặc biệt ra khỏi date_cols (chỉ giữ lại cột ngày TT)
+    _special_cols = {ma_tram_col, amount_col, new_amount_col, new_price_date_col}
+    date_cols = [c for c in df_pay.columns if c not in _special_cols]
     
     for _, row in df_pay.iterrows():
         ma_tram = str(row[ma_tram_col]).strip().lower() if pd.notna(row[ma_tram_col]) else ""
         if not ma_tram: continue
         
-        # Bốc KHỚP nguyên giá trị của Cột tiền tại Sheet 2 (số tiền thuê/tháng)
+        # Bốc KHỚP nguyên giá trị của Cột tiền tại Sheet 2 (số tiền thuê/tháng — giá CŨ)
         amount = row[amount_col] if amount_col and pd.notna(row[amount_col]) else 0
         try:
             amount_val = float(str(amount).replace(',', '').replace(' ', ''))
         except:
             amount_val = 0.0
-            
+
+        # Đọc giá thuê MỚI nếu cột "Số tiền thuê/tháng_mới" tồn tại
+        new_amount_val = 0.0
+        if new_amount_col is not None:
+            raw_new_amt = row.get(new_amount_col, None)
+            if raw_new_amt is not None and pd.notna(raw_new_amt):
+                try:
+                    new_amount_val = float(str(raw_new_amt).replace(',', '').replace(' ', ''))
+                except:
+                    pass
+
+        # Đọc ngày bắt đầu tính giá mới nếu cột tồn tại
+        new_price_dt_inner = None
+        if new_price_date_col is not None:
+            raw_npd = row.get(new_price_date_col, None)
+            if raw_npd is not None and pd.notna(raw_npd):
+                new_price_dt_inner = _parse_any_date(raw_npd)
+
         dates = []
         for c in date_cols:
             val = row[c]
@@ -821,6 +886,9 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             "Ngày TT kỳ trước": fmt(prev_date),
             "Ngày đến hạn TT kỳ tiếp theo": fmt(next_date),
             "__raw_amount__": amount_val,
+            "__new_amount__": new_amount_val,           # giá thuê mới (0.0 nếu không có)
+            "__new_price_dt__": new_price_dt_inner,     # datetime hoặc None
+            "__due_dt__": due_date,                     # pd.Timestamp gốc để tính period_end
             "__is_due_this_month__": bool(due_date)
         }
         
@@ -869,10 +937,44 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             cycle_val = 1.0
             
         real_cycle = cycle_val * multiplier
-        
-        # TRỌNG TÂM: SỐ TIỀN THANH TOÁN (1 Kỳ) = Tiền 1 tháng * Số tháng chu kỳ
-        calc_amount = base_monthly * real_cycle
-        
+
+        # ══════════════════════════════════════════════════════════════════════
+        # TÍNH SỐ TIỀN THANH TOÁN — hỗ trợ kỳ chuyển tiếp 2 mức giá
+        # ══════════════════════════════════════════════════════════════════════
+        new_monthly  = info.get("__new_amount__", 0.0)
+        new_price_dt = info.get("__new_price_dt__", None)   # datetime | None
+        due_dt_pay   = info.get("__due_dt__", None)          # pd.Timestamp | None
+
+        if due_dt_pay is not None and new_monthly > 0 and new_price_dt is not None and base_monthly > 0:
+            # Chuyển pd.Timestamp → datetime thuần để _add_months không bị lỗi
+            due_dt_py  = due_dt_pay.to_pydatetime() if hasattr(due_dt_pay, 'to_pydatetime') else due_dt_pay
+            cycle_int  = max(1, round(real_cycle))           # làm tròn số tháng
+            period_end = _add_months(due_dt_py, cycle_int) + timedelta(days=-1)
+
+            if new_price_dt <= due_dt_py:
+                # TH2: Toàn bộ kỳ đã áp dụng giá mới
+                calc_amount       = new_monthly * real_cycle
+                formatted_monthly = f"{new_monthly:,.0f}"   # hiển thị giá mới
+
+            elif new_price_dt > period_end:
+                # TH3: Toàn bộ kỳ vẫn là giá cũ
+                calc_amount = base_monthly * real_cycle
+
+            else:
+                # TH4: Kỳ chuyển tiếp — tách 2 mốc theo tỷ lệ ngày thực tế / tổng ngày kỳ
+                # Dùng tỷ lệ (days / total_days) thay vì /30 cố định để tổng luôn = real_cycle tháng
+                # Ví dụ: 3 tháng Nov-Jan có 92 ngày (không phải 90) → /30 sẽ tính thừa 3.07 tháng
+                total_days  = (period_end - due_dt_py).days + 1         # tổng ngày thực tế trong kỳ
+                days_old    = (new_price_dt - due_dt_py).days           # số ngày giá cũ
+                days_new    = (period_end   - new_price_dt).days + 1    # số ngày giá mới
+                # Tổng tiền = giá_cũ × chu_kỳ × tỷ_lệ_cũ + giá_mới × chu_kỳ × tỷ_lệ_mới
+                calc_amount = (base_monthly * real_cycle * days_old / total_days) + \
+                              (new_monthly  * real_cycle * days_new / total_days)
+        else:
+            # TH1: Không có thông tin giá mới → tính đơn giản như cũ
+            calc_amount = base_monthly * real_cycle
+        # ══════════════════════════════════════════════════════════════════════
+
         if calc_amount > 0:
             formatted_amount = f"{calc_amount:,.0f}"
         else:
@@ -1051,13 +1153,14 @@ def get_profit_report_data(file_source, time_input_str, df_source):
             try:
                 target_months_years = [(int(parts[0]), int(parts[1]))]
             except:
-                target_months_years = [(datetime.now().month, datetime.now().year)]
+                _n = _today()
+                target_months_years = [(_n.month, _n.year)]
         else:
             try:
                 target_year = int(time_input_str)
                 target_months_years = [(m, target_year) for m in range(1, 13)]
             except:
-                target_year = datetime.now().year
+                target_year = _today().year
                 target_months_years = [(m, target_year) for m in range(1, 13)]
     
     # 1. TỔNG TIỀN CHỦ NHÀ
@@ -1221,13 +1324,14 @@ def get_profit_report_data_exclude_ca_nhan(file_source, time_input_str, df_sourc
             try:
                 target_months_years = [(int(parts[0]), int(parts[1]))]
             except:
-                target_months_years = [(datetime.now().month, datetime.now().year)]
+                _n = _today()
+                target_months_years = [(_n.month, _n.year)]
         else:
             try:
                 target_year = int(time_input_str)
                 target_months_years = [(m, target_year) for m in range(1, 13)]
             except:
-                target_year = datetime.now().year
+                target_year = _today().year
                 target_months_years = [(m, target_year) for m in range(1, 13)]
     
     # 1. TỔNG TIỀN CHỦ NHÀ (loại trừ Cá nhân)
@@ -1397,7 +1501,7 @@ def load_data_and_enrich_v3(file_source, target_month_str):
             df2 = pd.read_excel(file_source, sheet_name=target_sheet_2)
             
         # Tách tháng năm từ người dùng nhập
-        now = datetime.now()
+        now = _today()
         t_month, t_year = now.month, now.year
         try:
             parts = target_month_str.split('/')
@@ -1460,7 +1564,7 @@ def load_payback_data(file_source):
 # --- SIDEBAR VÀ NHÚNG DATA ---
 st.sidebar.header("📁 Dữ Liệu Báo Cáo")
 
-current_mm_yyyy = datetime.now().strftime('%m/%Y')
+current_mm_yyyy = _today().strftime('%m/%Y')
 
 # Hỗ trợ tự động nhận diện cả chữ hoa chữ thường
 DEFAULT_FILE = ""
@@ -1825,7 +1929,7 @@ if not df_source.empty:
         with st.form(key='profit_yearly_form'):
             st.info("💡 Điền vào chữ Tùy chọn 1 HOẶC Tùy chọn 2 bên dưới rồi nhấn nút.")
             time_input_range = st.text_input("📅 Tùy chọn 1: Khoảng tháng (Ví dụ: 05/2026 - 07/2026):", placeholder="MM/YYYY - MM/YYYY")
-            time_input_tab4 = st.text_input("📅 Tùy chọn 2: Một Năm (YYYY) hoặc Một Tháng cụ thể (MM/YYYY):", placeholder="Ví dụ: 03/2026", value=str(datetime.now().year))
+            time_input_tab4 = st.text_input("📅 Tùy chọn 2: Một Năm (YYYY) hoặc Một Tháng cụ thể (MM/YYYY):", placeholder="Ví dụ: 03/2026", value=str(_today().year))
             submit_profit = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN TÀI CHÍNH", use_container_width=True)
             
         if submit_profit:
@@ -1950,7 +2054,7 @@ if not df_source.empty:
         # --- FORM TRA CỨU ---
         with st.form(key='subject_form'):
             st.info("💡 Tra cứu theo định dạng Tháng/Năm (MM/YYYY) để kết xuất Cú pháp Content cho Ngân hàng.")
-            month_input_tab5 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=datetime.now().strftime('%m/%Y'))
+            month_input_tab5 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=_today().strftime('%m/%Y'))
             c1, c2 = st.columns(2)
             with c1:
                 date_start_tab5 = st.text_input("⏳ Từ ngày (Để trống = đầu tháng):", placeholder="MM/DD/YYYY. VD: 06/01/2026")
@@ -2297,7 +2401,7 @@ if not df_source.empty:
         with st.form(key='profit_excl_form'):
             st.markdown("**Điền vào Tùy chọn 1 HOẶC Tùy chọn 2, rồi nhấn nút.**")
             time_input_range_t6 = st.text_input("📅 Tùy chọn 1: Khoảng tháng (Ví dụ: 05/2026 - 07/2026):", placeholder="MM/YYYY - MM/YYYY", key="range_t6")
-            time_input_t6 = st.text_input("📅 Tùy chọn 2: Một Năm (YYYY) hoặc Một Tháng cụ thể (MM/YYYY):", placeholder="Ví dụ: 03/2026", value=str(datetime.now().year), key="single_t6")
+            time_input_t6 = st.text_input("📅 Tùy chọn 2: Một Năm (YYYY) hoặc Một Tháng cụ thể (MM/YYYY):", placeholder="Ví dụ: 03/2026", value=str(_today().year), key="single_t6")
             submit_t6 = st.form_submit_button(label="🔍 TỔNG HỢP LỢI NHUẬN (LOẠI TRỪ CÁ NHÂN)", use_container_width=True)
         
         if submit_t6:
@@ -2726,7 +2830,12 @@ if not df_source.empty:
 
                 # --- BẢNG DANH SÁCH TRẠM ---
                 with st.expander(f"📋 Xem danh sách {filtered_count} trạm đang hiển thị trên bản đồ"):
-                    cols_show = ["mã trạm", lat_col, long_col, "Địa chỉ", "Viettel", "Vina", "Mobi", "Chủ nhà + SĐT"]
+                    cols_show = [
+                        "mã trạm", lat_col, long_col, "Địa chỉ",
+                        "Viettel", "Vina", "Mobi", "Chủ nhà + SĐT",
+                        "Ngày hết hạn HĐ", "Ngày hết hạn hợp đồng_mới",
+                        "giá thuê chủ nhà", "giá thuê chủ nhà_mới"
+                    ]
                     existing_show = [c for c in cols_show if c in df_map_filtered.columns]
                     df_map_show = df_map_filtered[existing_show].copy()
                     df_map_show.insert(1, "Số NM", df_map_filtered["__provider_count__"].values)
@@ -3148,19 +3257,30 @@ if not df_source.empty:
             "mã trạm", "Q/H", "long thuê", "lat thuê", "Địa chỉ",
             "Viettel", "Vina", "Mobi",
             "Ngày ký HĐ Chủ nhà_trên HĐ", "Ngày hết hạn HĐ",
+            "Ngày hết hạn hợp đồng_mới",   # Ngày HĐ gia hạn mới nhất
             "Chủ nhà + SĐT",
-            "giá thuê chủ nhà", "Giá Viettel Thuê", "Giá MB thuê", "Giá Vina thuê",
+            "giá thuê chủ nhà", "giá thuê chủ nhà_mới",  # Giá thuê mới sau đàm phán
+            "Giá Viettel Thuê", "Giá MB thuê", "Giá Vina thuê",
             "chu kỳ thanh toán cho chủ nhà"
         ]
 
         # --- Lấy dữ liệu từ df_source (đã được enrich) ---
         df_t9 = df_source.copy()
 
-        expiry_col = "Ngày hết hạn HĐ"
-        sign_col   = "Ngày ký HĐ Chủ nhà_trên HĐ"
+        expiry_col     = "Ngày hết hạn HĐ"
+        new_expiry_col = "Ngày hết hạn hợp đồng_mới"
+        sign_col       = "Ngày ký HĐ Chủ nhà_trên HĐ"
 
-        # Dùng _parse_any_date() utility chung thay vì định nghĩa lại
-        df_t9["__expiry_dt__"] = df_t9[expiry_col].apply(_parse_any_date)
+        # Ưu tiên cột mới nếu có dữ liệu, fallback về cột cũ
+        def _resolve_expiry_t9(row):
+            raw = str(row.get(new_expiry_col, '')).strip()
+            if raw and raw not in ('-', 'nan', ''):
+                dt = _parse_any_date(raw)
+                if dt:
+                    return dt
+            return _parse_any_date(row.get(expiry_col, ''))
+
+        df_t9["__expiry_dt__"] = df_t9.apply(_resolve_expiry_t9, axis=1)
 
         # Tính số tháng còn lại (float, làm tròn 1 chữ số thập phân)
         def months_remaining(expiry_dt):
