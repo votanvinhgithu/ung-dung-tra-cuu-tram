@@ -6,6 +6,9 @@ import json
 from datetime import datetime, timedelta
 import re
 import requests
+import base64
+import hmac
+import hashlib
 from zoneinfo import ZoneInfo
 
 # Múi giờ Việt Nam — BẮT BUỘC khi chạy trên Streamlit Cloud (server chạy UTC, lệch 7 tiếng).
@@ -76,10 +79,34 @@ def _add_months(dt: datetime, months: float) -> datetime:
     day_new = min(dt.day, max_day)
     return dt.replace(year=year_new, month=month_new, day=day_new) + timedelta(days=extra_days)
 
+
+def _resolve_expiry_date(row) -> datetime | None:
+    """
+    Lấy NGÀY HẾT HẠN HĐ CHỦ NHÀ của một dòng dữ liệu — dùng chung cho:
+      - banner + bảng Tab 9 (sắp hết hạn HĐ)
+      - cảnh báo chu kỳ TT vượt hạn HĐ ở Tab 2 và Tab 5
+    Quy tắc: ưu tiên "Ngày hết hạn hợp đồng_mới" (ngày gia hạn mới nhất),
+    nếu trống/không đọc được thì fallback về "Ngày hết hạn HĐ".
+
+    QUAN TRỌNG: truyền THẲNG giá trị gốc vào _parse_any_date(), tuyệt đối
+    KHÔNG str() trước. Khi cột Excel có lẫn chữ (vd "chưa gia hạn"), pandas
+    giữ nguyên ô ngày ở kiểu Timestamp; str(Timestamp) ra
+    "2027-05-01 00:00:00" — không khớp format nào nên bị trả về None,
+    khiến app bỏ qua ngày gia hạn mới và cảnh báo nhầm theo ngày hết hạn cũ.
+    """
+    dt_new = _parse_any_date(row.get("Ngày hết hạn hợp đồng_mới", None))
+    if dt_new is not None:
+        return dt_new
+    return _parse_any_date(row.get("Ngày hết hạn HĐ", None))
+
 # --- HÀM LƯU / ĐỌC TRẠNG THÁI THANH TOÁN (GITHUB GIST) ---
 # Dữ liệu được lưu bền vững trên GitHub Gist, không bị mất khi Streamlit Cloud restart.
 # Nếu chưa cấu hình GIST_TOKEN/GIST_ID → fallback sang file JSON local (dev mode).
 PAYMENT_STATUS_FILE = "payment_status.json"   # chỉ dùng khi chạy local/dev
+
+# Banner cảnh báo trễ TT quét ngược bao nhiêu tháng (gồm cả tháng hiện tại).
+# Trước đây chỉ soi 2 tháng nên khoản sót từ tháng thứ 3 trở đi biến mất vĩnh viễn.
+OVERDUE_MONTHS_BACK = 6
 
 def _get_gist_config():
     """Trả về (token, gist_id) từ st.secrets. Nếu không có → ('', '')."""
@@ -105,6 +132,105 @@ def _fetch_gist_content(gist_id: str, token: str) -> dict:
     except Exception:
         pass
     return {}
+
+def _month_key(month_str) -> str:
+    """
+    Chuẩn hoá tháng thành KHOÁ LƯU duy nhất dạng 'MM_YYYY' (luôn có số 0 ở đầu).
+
+    LÝ DO BẮT BUỘC: kế toán có thể gõ '8/2026' thay vì '08/2026' (form vẫn chấp nhận),
+    trong khi banner cảnh báo trễ TT tra theo strftime('%m_%Y') = '08_2026'.
+    Nếu không chuẩn hoá, tick lưu vào khoá '8_2026' còn banner đọc khoá '08_2026'
+    → banner vẫn báo "chưa TT" cho trạm ĐÃ trả tiền, và danh sách đã TT bị xé đôi
+    thành 2 khoá khác nhau → nguy cơ thanh toán 2 lần.
+    """
+    s = str(month_str).strip().replace('_', '/')
+    parts = s.split('/')
+    try:
+        return f"{int(parts[0]):02d}_{int(parts[1])}"
+    except Exception:
+        return s.replace('/', '_')
+
+
+def _paid_set_for(all_status: dict, month_str) -> set:
+    """
+    Lấy tập mã trạm ĐÃ thanh toán của một tháng, gộp cả các khoá cũ chưa chuẩn hoá.
+    Nhờ vậy dữ liệu đã lỡ lưu dưới dạng '8_2026' vẫn được nhận, không mất tick cũ.
+    """
+    if not isinstance(all_status, dict):
+        return set()
+    key  = _month_key(month_str)
+    paid = set(all_status.get(key, []) or [])
+    for k, v in all_status.items():
+        if k != key and _month_key(k) == key:
+            paid |= set(v or [])
+    return {str(m).strip() for m in paid if str(m).strip()}
+
+
+# ============================================================
+# NHẬT KÝ THAO TÁC TICK (AI TICK / BỎ TICK / LÚC NÀO)
+# Lưu chung trong Gist dưới khoá "__audit_log__". Khoá này KHÔNG phải khoá tháng
+# nên 8 tháng dữ liệu cũ vẫn đọc bình thường — hoàn toàn tương thích ngược.
+# Bản ghi cũ (chưa có log) sẽ hiển thị "-", không gây lỗi.
+# ============================================================
+AUDIT_KEY = "__audit_log__"
+AUDIT_MAX = 1000        # giữ tối đa 1000 sự kiện gần nhất, tránh phình Gist
+
+
+def _current_user() -> str:
+    """Email đang đăng nhập — dùng để ghi nhận ai thực hiện thao tác."""
+    try:
+        return str(st.session_state.get("user_email", "")).strip().lower() or "(không rõ)"
+    except Exception:
+        return "(không rõ)"
+
+
+def _append_audit(all_status: dict, month_key: str, added: set, removed: set) -> dict:
+    """Ghi thêm sự kiện tick / bỏ tick vào nhật ký, kèm người thực hiện và thời điểm."""
+    log = all_status.get(AUDIT_KEY, [])
+    if not isinstance(log, list):
+        log = []
+    who = _current_user()
+    ts  = datetime.now(VN_TZ).strftime('%d/%m/%Y %H:%M')   # giờ Việt Nam
+    for ma in sorted(added):
+        log.append({"at": ts, "by": who, "thang": month_key, "viec": "tick", "ma_tram": ma})
+    for ma in sorted(removed):
+        log.append({"at": ts, "by": who, "thang": month_key, "viec": "bo_tick", "ma_tram": ma})
+    if len(log) > AUDIT_MAX:
+        log = log[-AUDIT_MAX:]
+    all_status[AUDIT_KEY] = log
+    return all_status
+
+
+def _audit_lookup(all_status: dict, month_key: str) -> dict:
+    """
+    Trả về {mã trạm: (người tick, thời điểm)} theo bản ghi 'tick' mới nhất của tháng.
+    Trạm bị bỏ tick sau đó sẽ bị loại khỏi kết quả.
+    """
+    out = {}
+    log = all_status.get(AUDIT_KEY, []) if isinstance(all_status, dict) else []
+    if not isinstance(log, list):
+        return out
+    for e in log:
+        if not isinstance(e, dict) or e.get("thang") != month_key:
+            continue
+        ma = str(e.get("ma_tram", "")).strip()
+        if not ma:
+            continue
+        if e.get("viec") == "tick":
+            out[ma] = (e.get("by", ""), e.get("at", ""))
+        else:
+            out.pop(ma, None)
+    return out
+
+
+def _audit_events(all_status: dict, month_key: str) -> list:
+    """Danh sách sự kiện của một tháng, mới nhất lên đầu."""
+    log = all_status.get(AUDIT_KEY, []) if isinstance(all_status, dict) else []
+    if not isinstance(log, list):
+        return []
+    return [e for e in reversed(log)
+            if isinstance(e, dict) and e.get("thang") == month_key]
+
 
 def load_payment_status() -> dict:
     """
@@ -173,8 +299,9 @@ def save_payment_status(status_dict: dict) -> bool:
 def get_overdue_alert(f_source):
     """
     Tính các trạm chưa thanh toán và trễ hạn.
-    Kiểm tra cả THÁNG HIỆN TẠI và THÁNG TRƯỚC.
-    Trạm tháng trước chưa TT sẽ có nhãn '[T.TRƯỚC]' kèm theo trong banner.
+    Quét NGƯỢC OVERDUE_MONTHS_BACK tháng (mặc định 6) kể từ tháng hiện tại,
+    để khoản sót từ vài tháng trước không bị rơi khỏi tầm ngắm.
+    Trạm của tháng cũ được gắn nhãn '(tồn MM/YYYY)' để biết sót từ kỳ nào.
     Trả về dict {1: [...], 2: [...], ..., 7: [...], 8: [...]} (8 = quá >=8 ngày).
     Mỗi phần tử trong list là tuple (label, days_late).
     """
@@ -183,21 +310,18 @@ def get_overdue_alert(f_source):
 
     today = _today()   # 1 nguồn duy nhất cho toàn bộ hàm
 
-    # --- Tháng hiện tại ---
-    curr_month_str = today.strftime('%m/%Y')   # VD: 06/2026
-    curr_safe      = today.strftime('%m_%Y')   # VD: 06_2026
+    # --- Dựng danh sách tháng cần quét: tháng này + (N-1) tháng liền trước ---
+    months = []          # [(month_str 'MM/YYYY', là_tháng_hiện_tại)]
+    m, y = today.month, today.year
+    for i in range(OVERDUE_MONTHS_BACK):
+        months.append((f"{m:02d}/{y}", i == 0))
+        m -= 1
+        if m == 0:       # lùi qua năm: tháng 1 → tháng 12 năm trước
+            m, y = 12, y - 1
 
-    # --- Tháng trước (xử lý đúng qua năm: tháng 1 → tháng 12 năm trước) ---
-    if today.month == 1:
-        pm, py = 12, today.year - 1
-    else:
-        pm, py = today.month - 1, today.year
-    prev_month_str = f"{pm:02d}/{py}"          # VD: 05/2026
-    prev_safe      = f"{pm:02d}_{py}"          # VD: 05_2026
-
+    # Dùng _paid_set_for() để nhận cả khoá cũ chưa chuẩn hoá (vd '8_2026'),
+    # nếu không banner sẽ báo trễ TT cho trạm mà kế toán ĐÃ tick.
     all_status = load_payment_status()
-    paid_curr = set(all_status.get(curr_safe, []))
-    paid_prev = set(all_status.get(prev_safe, []))
 
     # Hàm load & lọc trạm đến hạn của 1 tháng
     def _load_due(month_str):
@@ -209,14 +333,14 @@ def get_overdue_alert(f_source):
         except Exception:
             return pd.DataFrame()
 
-    df_curr_due = _load_due(curr_month_str)
-    df_prev_due = _load_due(prev_month_str)
-
     # Phân loại từng ngày: key=1..7, key=8 là >=8 ngày
     overdue_by_day = {d: [] for d in range(1, 9)}
 
+    # Chống trùng: một trạm có thể sót ở nhiều tháng, chỉ báo lần trễ NẶNG NHẤT
+    seen_stations = set()
+
     # Hàm xử lý chung: duyệt từng trạm, tính ngày trễ, phân loại
-    # suffix = '' với tháng hiện tại, '[T.TRƯỚC]' với tháng trước
+    # suffix = '' với tháng hiện tại, '(tồn MM/YYYY)' với tháng cũ
     def _process(df_due, paid_set, suffix=''):
         for _, row in df_due.iterrows():
             ma = str(row.get('mã trạm', '')).strip()
@@ -224,6 +348,8 @@ def get_overdue_alert(f_source):
                 continue
             if ma in paid_set:
                 continue  # đã TT → bỏ qua
+            if ma in seen_stations:
+                continue  # đã báo ở tháng trễ nặng hơn → không lặp lại
 
             due_date = _parse_any_date(row.get('Ngày tới hạn TT trong tháng', ''))
             if due_date is None:
@@ -233,9 +359,14 @@ def get_overdue_alert(f_source):
             if days_late >= 1:
                 bucket = min(days_late, 8)  # 8 đại diện cho >=8 ngày
                 overdue_by_day[bucket].append((label, days_late))
+                seen_stations.add(ma)
 
-    _process(df_curr_due, paid_curr)                      # tháng hiện tại
-    _process(df_prev_due, paid_prev, '(tồn tháng trước)')  # tháng trước, ghi chú rõ
+    # Quét từ tháng CŨ NHẤT về tháng hiện tại, để trạm sót lâu nhất được ghi nhận
+    # trước và nhãn '(tồn MM/YYYY)' chỉ đúng kỳ phát sinh khoản nợ đầu tiên.
+    for month_str, is_current in reversed(months):
+        paid_set = _paid_set_for(all_status, month_str)
+        suffix   = '' if is_current else f'(tồn {month_str})'
+        _process(_load_due(month_str), paid_set, suffix)
 
     # Sắp xếp giảm dần theo số ngày trễ trong mỗi nhóm
     for lst in overdue_by_day.values():
@@ -361,13 +492,8 @@ def get_expiry_alert(df_source):
         ma = str(row.get('mã trạm', '')).strip()
         if not ma or ma.lower() in ('nan', ''):
             continue
-        # Ưu tiên ngày mới nếu có
-        exp_dt = None
-        raw_new = str(row.get(new_col, '')).strip()
-        if raw_new and raw_new not in ('-', 'nan', ''):
-            exp_dt = _parse_any_date(raw_new)
-        if exp_dt is None:
-            exp_dt = _parse_any_date(row.get(old_col, ''))
+        # Ưu tiên ngày gia hạn mới nhất, fallback ngày hết hạn cũ
+        exp_dt = _resolve_expiry_date(row)
         if exp_dt is None:
             continue
         diff_days = (exp_dt - today).days
@@ -496,11 +622,8 @@ def get_contract_overrun_warnings(df_due):
         if due_date is None:
             continue
 
-        # Ưu tiên ngày mới nếu có
-        _raw_new_exp = str(row.get('Ngày hết hạn hợp đồng_mới', '')).strip()
-        exp_date = _parse_any_date(_raw_new_exp) if _raw_new_exp and _raw_new_exp not in ('-', 'nan', '') else None
-        if exp_date is None:
-            exp_date = _parse_any_date(row.get('Ngày hết hạn HĐ', ''))
+        # Ưu tiên ngày gia hạn mới nhất, fallback ngày hết hạn cũ
+        exp_date = _resolve_expiry_date(row)
         if exp_date is None:
             continue
 
@@ -508,7 +631,9 @@ def get_contract_overrun_warnings(df_due):
         raw_cycle  = str(row.get('chu kỳ thanh toán cho chủ nhà', '1')).strip().lower()
         multiplier = 12.0 if 'năm' in raw_cycle else 1.0
         try:
-            digits     = re.sub(r'[^\d.]', '', raw_cycle)
+            # replace(',', '.') để "1,5 tháng" ra 1.5 tháng — nếu không, dấu phẩy bị
+            # xoá và "1,5" biến thành "15" → hiểu nhầm thành chu kỳ 15 tháng.
+            digits     = re.sub(r'[^\d.]', '', raw_cycle.replace(',', '.'))
             cycle_val  = float(digits) if digits else 1.0
             if cycle_val == 0:
                 cycle_val = 1.0
@@ -516,8 +641,10 @@ def get_contract_overrun_warnings(df_due):
             cycle_val = 1.0
         cycle_months = cycle_val * multiplier
 
-        # Dùng _add_months() — chính xác theo lịch, không nhân 30.4375
-        payment_end = _add_months(due_date, cycle_months)
+        # Ngày CUỐI CÙNG kỳ thanh toán này phủ tới = tới hạn + chu kỳ - 1 ngày.
+        # Trừ 1 ngày để khớp đúng cách tính period_end trong enrich_payment_data;
+        # nếu không, kỳ kết thúc đúng ngày hết hạn HĐ vẫn bị cảnh báo oan.
+        payment_end = _add_months(due_date, cycle_months) - timedelta(days=1)
 
         if payment_end > exp_date:
             lbl = f"{int(cycle_months)} tháng" if cycle_months == int(cycle_months) else f"{cycle_months:.1f} tháng"
@@ -565,6 +692,95 @@ def render_contract_overrun_warning(df_due):
 # BẢO MẬT: KIỂM SOÁT TRUY CẬP THEO GMAIL
 # =============================================================
 
+# ─────────────────────────────────────────────────────────────────────────────
+# GHI NHỚ ĐĂNG NHẬP QUA URL — CHỐNG VĂNG LOG OUT TRÊN ĐIỆN THOẠI
+#
+# VẤN ĐỀ: st.session_state chỉ tồn tại theo 1 kết nối WebSocket. Trên điện thoại,
+# khi vuốt sang app khác / khoá màn hình / đổi 4G-Wifi, trình duyệt ngắt kết nối
+# và Streamlit tạo phiên MỚI rỗng → app bắt đăng nhập lại từ đầu.
+#
+# CÁCH XỬ LÝ: sau khi đăng nhập, gắn một token vào URL (?t=...). Reload hay
+# kết nối lại thì URL vẫn còn → app tự khôi phục phiên, giống hệt bấm F5.
+# Token được ký HMAC-SHA256 nên không thể tự chế, và tự hết hạn sau 30 ngày.
+# ─────────────────────────────────────────────────────────────────────────────
+AUTH_QS_KEY     = "t"    # tên tham số trên URL
+AUTH_TOKEN_DAYS = 30     # token sống bao lâu
+
+
+def _auth_secret() -> str:
+    """Khoá bí mật để ký token. Ưu tiên AUTH_SECRET, không có thì mượn GIST_TOKEN."""
+    try:
+        s = str(st.secrets.get("AUTH_SECRET", "")).strip()
+        if s:
+            return s
+        s = str(st.secrets.get("GIST_TOKEN", "")).strip()
+        if s:
+            return s
+    except Exception:
+        pass
+    return "station-finder-local-dev-only"
+
+
+def _make_auth_token(email: str) -> str:
+    """Tạo token dạng <payload>.<chữ ký> để nhét vào URL."""
+    exp     = int((_today() + timedelta(days=AUTH_TOKEN_DAYS)).timestamp())
+    payload = f"{email.strip().lower()}|{exp}"
+    body    = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    sig     = hmac.new(_auth_secret().encode("utf-8"),
+                       payload.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    return f"{body}.{sig}"
+
+
+def _read_auth_token(token: str):
+    """Đọc token từ URL. Trả về email nếu chữ ký hợp lệ và chưa hết hạn, ngược lại None."""
+    try:
+        body, sig = str(token).split(".", 1)
+        payload   = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode("utf-8")
+        expect    = hmac.new(_auth_secret().encode("utf-8"),
+                             payload.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expect):
+            return None            # token bị sửa hoặc ký bằng khoá khác
+        email, exp = payload.rsplit("|", 1)
+        if int(exp) < int(datetime.now(VN_TZ).timestamp()):
+            return None            # hết hạn
+        return email.strip().lower()
+    except Exception:
+        return None
+
+
+def _remember_login(email: str):
+    """Ghi token vào URL để phiên sống sót qua reload / mất kết nối."""
+    try:
+        st.query_params[AUTH_QS_KEY] = _make_auth_token(email)
+    except Exception:
+        pass                        # bản Streamlit quá cũ → bỏ qua, vẫn đăng nhập được
+
+
+def _forget_login():
+    """Xoá token khỏi URL khi đăng xuất — nếu không, reload sẽ tự đăng nhập lại."""
+    st.session_state.pop("user_email", None)
+    try:
+        if AUTH_QS_KEY in st.query_params:
+            del st.query_params[AUTH_QS_KEY]
+    except Exception:
+        pass
+
+
+def _restore_login_from_url():
+    """Khôi phục phiên từ token trên URL nếu session_state đã bị mất."""
+    if st.session_state.get("user_email"):
+        return
+    try:
+        token = st.query_params.get(AUTH_QS_KEY, "")
+    except Exception:
+        return
+    if not token:
+        return
+    email = _read_auth_token(token)
+    if email:
+        st.session_state["user_email"] = email
+
+
 def _get_allowed_emails():
     """Lấy danh sách email từ st.secrets. Nếu chạy local không có secrets thì trả về rỗng."""
     try:
@@ -593,6 +809,10 @@ def check_auth():
     if not allowed_list:
         return
 
+    # Mất kết nối / reload trên điện thoại làm session_state rỗng →
+    # lấy lại phiên từ token trên URL trước khi quyết định bắt đăng nhập.
+    _restore_login_from_url()
+
     # Nếu đã đăng nhập → kiểm tra email
     if "user_email" in st.session_state and st.session_state["user_email"]:
         email = st.session_state["user_email"].strip().lower()
@@ -609,7 +829,7 @@ def check_auth():
             </div>
             """.format(email=email), unsafe_allow_html=True)
             if st.button("🔙 Đăng xuất", key="btn_logout_denied"):
-                st.session_state.pop("user_email", None)
+                _forget_login()      # xoá cả token trên URL
                 st.rerun()
             st.stop()
         # Email hợp lệ → hiển thị nút đăng xuất trên sidebar
@@ -624,8 +844,12 @@ def check_auth():
             </div>
             """, unsafe_allow_html=True)
             if st.button("🔙 Đăng xuất", use_container_width=True, key="btn_logout_sidebar"):
-                st.session_state.pop("user_email", None)
+                _forget_login()      # xoá cả token trên URL, nếu không reload sẽ tự vào lại
                 st.rerun()
+            st.caption("📱 Đã bật ghi nhớ đăng nhập 30 ngày — vuốt hay tải lại trang "
+                       "sẽ không bị bắt đăng nhập lại.")
+        # Gia hạn token mỗi lần vào app để anh không bị hết hạn giữa chừng
+        _remember_login(email)
         return  # OK, tiếp tục render
 
     # Chưa đăng nhập → hiển thị trang đăng nhập
@@ -670,6 +894,7 @@ def check_auth():
                 st.error("⚠️ Vui lòng nhập email trước khi tiếp tục.")
             else:
                 st.session_state["user_email"] = clean
+                _remember_login(clean)   # gắn token vào URL để không bị văng ra nữa
                 st.rerun()
     st.stop()
 
@@ -695,7 +920,8 @@ EXTRA_PAY_COLS = [
     "Ngày tới hạn TT trong tháng",
     "Ngày TT kỳ trước",
     "Ngày đến hạn TT kỳ tiếp theo",
-    "Số tiền cần thanh toán"
+    "Số tiền cần thanh toán",
+    "Ngày áp dụng giá mới",   # mốc bắt đầu tính giá thuê mới (lấy từ Sheet 2)
 ]
 
 DISPLAY_COLUMNS = TARGET_COLUMNS + EXTRA_PAY_COLS
@@ -810,12 +1036,21 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
                 or ("bắt đầu" in c_low and "giá thuê" in c_low)):
             new_price_date_col = c
             break
+
+    # Cột chu kỳ thanh toán ở Sheet 2: "Chu kỳ thanh toán (tháng)".
+    # Lấy chu kỳ từ ĐÂY thay vì Sheet 1, để chu kỳ và giá thuê cùng một nguồn —
+    # tránh cảnh 2 sheet ghi khác nhau rồi tính ra số tiền sai.
+    cycle_col = None
+    for c in df_pay.columns:
+        if "chu kỳ" in str(c).strip().lower():
+            cycle_col = c
+            break
     # ─────────────────────────────────────────────────────────────────────────
 
     if not ma_tram_col: return df_main # Bỏ qua nếu sheet 2 không có cột mã trạm
 
     # Loại tất cả cột đặc biệt ra khỏi date_cols (chỉ giữ lại cột ngày TT)
-    _special_cols = {ma_tram_col, amount_col, new_amount_col, new_price_date_col}
+    _special_cols = {ma_tram_col, amount_col, new_amount_col, new_price_date_col, cycle_col}
     date_cols = [c for c in df_pay.columns if c not in _special_cols]
     
     for _, row in df_pay.iterrows():
@@ -839,6 +1074,13 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
                 except:
                     pass
 
+        # Đọc chu kỳ thanh toán ở Sheet 2 (giữ nguyên chữ, vd "3 tháng", "1 năm")
+        cycle_raw_s2 = ""
+        if cycle_col is not None:
+            _rc = row.get(cycle_col, None)
+            if _rc is not None and pd.notna(_rc):
+                cycle_raw_s2 = str(_rc).strip()
+
         # Đọc ngày bắt đầu tính giá mới nếu cột tồn tại
         new_price_dt_inner = None
         if new_price_date_col is not None:
@@ -849,15 +1091,20 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         dates = []
         for c in date_cols:
             val = row[c]
-            if pd.notna(val):
-                if isinstance(val, pd.Timestamp) or isinstance(val, datetime):
-                    dates.append(pd.to_datetime(val))
-                else:
-                    try:
-                        d = pd.to_datetime(val)
-                        dates.append(d)
-                    except:
-                        pass
+            if pd.isna(val):
+                continue
+            if isinstance(val, (pd.Timestamp, datetime)):
+                dates.append(pd.to_datetime(val))
+                continue
+            # BỎ QUA ô thuần số (điển hình là cột "Stt" của Sheet 2).
+            # pd.to_datetime(3) trả về 01/01/1970 và lọt vào danh sách kỳ thanh toán,
+            # làm cột "Ngày TT kỳ trước" hiển thị sai thành 01/01/1970.
+            if isinstance(val, (int, float)) or str(val).strip().replace('.', '', 1).isdigit():
+                continue
+            try:
+                dates.append(pd.to_datetime(val))
+            except Exception:
+                pass
         dates.sort()
         
         due_this_month = [d for d in dates if d.year == target_year and d.month == target_month]
@@ -886,6 +1133,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             "Ngày TT kỳ trước": fmt(prev_date),
             "Ngày đến hạn TT kỳ tiếp theo": fmt(next_date),
             "__raw_amount__": amount_val,
+            "__cycle_raw__": cycle_raw_s2,              # chu kỳ TT lấy từ Sheet 2
             "__new_amount__": new_amount_val,           # giá thuê mới (0.0 nếu không có)
             "__new_price_dt__": new_price_dt_inner,     # datetime hoặc None
             "__due_dt__": due_date,                     # pd.Timestamp gốc để tính period_end
@@ -899,6 +1147,14 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         "Ngày đến hạn TT kỳ tiếp theo": [],
         "Số tiền cần thanh toán": [],
         "giá thuê chủ nhà": [], # Cột này sẽ đè Cột có sẵn trên Sheet 1
+        # Giá thuê MỚI + ngày bắt đầu áp dụng — lấy từ Sheet 2 vì đó chính là
+        # 2 con số dùng để tính "Số tiền cần thanh toán". Hiển thị ngay cạnh giá cũ
+        # để nhìn phát biết trạm nào đã đàm phán giá mới và áp dụng từ bao giờ.
+        "giá thuê chủ nhà_mới": [],
+        "Ngày áp dụng giá mới": [],
+        # Đè cột chu kỳ của Sheet 1 bằng chu kỳ THỰC SỰ dùng để tính tiền,
+        # để con số hiển thị và con số tính toán không bao giờ nói khác nhau.
+        "chu kỳ thanh toán cho chủ nhà": [],
         "__raw_amount__": [],
         "__is_due_this_month__": []
     }
@@ -922,9 +1178,19 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         # FORMAT số tiền một tháng CẬP NHẬT lên TAB 1 và TAB 2
         formatted_monthly = f"{base_monthly:,.0f}" if base_monthly > 0 else "-"
         
-        # Đọc chu kỳ thanh toán ở Sheet 1 (cột này có sẵn trong dataframe df_res)
-        raw_cycle = str(row.get("chu kỳ thanh toán cho chủ nhà", "1")).strip().lower()
-        
+        # ── CHU KỲ THANH TOÁN: ưu tiên SHEET 2, thiếu mới lấy Sheet 1 ──────────
+        # Lấy cùng nguồn với giá thuê để 2 con số luôn khớp nhau.
+        # 17 trạm không có mặt ở Sheet 2 (vd nhóm "không cần trả", "tiền internet")
+        # sẽ tự động rơi về Sheet 1, giữ nguyên thông tin đang hiển thị ở Tab 1/Tab 9.
+        _cycle_s1  = str(row.get("chu kỳ thanh toán cho chủ nhà", "")).strip()
+        _cycle_s2  = str(info.get("__cycle_raw__", "")).strip()
+        if _cycle_s2 and _cycle_s2.lower() not in ("nan", "-", ""):
+            cycle_display = _cycle_s2
+        else:
+            cycle_display = _cycle_s1
+        raw_cycle = (cycle_display if cycle_display else "1").lower()
+        # ───────────────────────────────────────────────────────────────────────
+
         # Xử lý ngoại lệ "năm" -> nhân thêm hệ số 12
         multiplier = 12.0 if "năm" in raw_cycle else 1.0
         
@@ -953,8 +1219,12 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
 
             if new_price_dt <= due_dt_py:
                 # TH2: Toàn bộ kỳ đã áp dụng giá mới
-                calc_amount       = new_monthly * real_cycle
-                formatted_monthly = f"{new_monthly:,.0f}"   # hiển thị giá mới
+                calc_amount = new_monthly * real_cycle
+                # KHÔNG ghi đè giá mới vào cột "giá thuê chủ nhà" nữa.
+                # Trước đây có ghi đè, khiến cột giá CŨ và cột giá MỚI hiện y hệt nhau
+                # (vd SGN1631 cùng ra 4.000.000) — nhìn không biết trạm đã đổi giá.
+                # Nay: cột cũ giữ đúng giá cũ, giá mới nằm ở cột riêng,
+                # kèm "Ngày áp dụng giá mới" để biết đang tính theo giá nào.
 
             elif new_price_dt > period_end:
                 # TH3: Toàn bộ kỳ vẫn là giá cũ
@@ -979,13 +1249,35 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             formatted_amount = f"{calc_amount:,.0f}"
         else:
             formatted_amount = "-"
-            
+
+        # ── GIÁ THUÊ MỚI hiển thị cạnh giá cũ ──────────────────────────────
+        # Ưu tiên Sheet 2 ("Số tiền thuê/tháng_mới") vì đây mới là con số app
+        # dùng để tính tiền. Nếu Sheet 2 chưa điền thì lấy tạm giá mới ở Sheet 1.
+        if new_monthly > 0:
+            formatted_new_price = f"{new_monthly:,.0f}"
+        else:
+            formatted_new_price = "-"
+            _s1_new = str(row.get("giá thuê chủ nhà_mới", "")).strip()
+            if _s1_new and _s1_new.lower() not in ("-", "nan", ""):
+                try:
+                    _v1 = float(re.sub(r'[^\d.]', '', _s1_new.replace(',', '')))
+                    if _v1 > 0:
+                        formatted_new_price = f"{_v1:,.0f}"
+                except Exception:
+                    pass
+
+        formatted_new_date = new_price_dt.strftime('%m/%d/%Y') if new_price_dt is not None else "-"
+        # ───────────────────────────────────────────────────────────────────
+
         new_cols["Ngày tới hạn TT trong tháng"].append(info.get("Ngày tới hạn TT trong tháng", "-"))
         new_cols["Ngày TT kỳ trước"].append(info.get("Ngày TT kỳ trước", "-"))
         new_cols["Ngày đến hạn TT kỳ tiếp theo"].append(info.get("Ngày đến hạn TT kỳ tiếp theo", "-"))
-        
+
         # Ghi đè vào kết quả hiển thị
         new_cols["giá thuê chủ nhà"].append(formatted_monthly)
+        new_cols["giá thuê chủ nhà_mới"].append(formatted_new_price)
+        new_cols["Ngày áp dụng giá mới"].append(formatted_new_date)
+        new_cols["chu kỳ thanh toán cho chủ nhà"].append(cycle_display)
         new_cols["Số tiền cần thanh toán"].append(formatted_amount)
         new_cols["__raw_amount__"].append(calc_amount)
         new_cols["__is_due_this_month__"].append(info.get("__is_due_this_month__", False))
@@ -1719,11 +2011,28 @@ if not df_source.empty:
                 date_start_tab2 = st.text_input("⏳ Từ ngày (Để trống lấy từ đầu tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/01/2026")
             with c2:
                 date_end_tab2 = st.text_input("⏳ Đến ngày (Để trống lấy đến cuối tháng):", placeholder="MM/DD/YYYY. Ví dụ: 03/25/2026")
-            
+
+            # Bộ lọc theo trạng thái thanh toán — chống chuyển khoản trùng lần 2.
+            # Trạng thái lấy từ đúng nguồn dữ liệu mà kế toán tick ở Tab 5 (GitHub Gist).
+            status_filter_tab2 = st.radio(
+                "💳 Lọc theo trạng thái thanh toán:",
+                ["🌐 Tất cả", "⏳ Chỉ trạm CHƯA thanh toán", "✅ Chỉ trạm ĐÃ thanh toán"],
+                index=0,
+                horizontal=True,
+                key="status_filter_tab2",
+            )
+
             submit_payment_filter = st.form_submit_button(label="🔍 TRA CỨU DANH SÁCH", use_container_width=True)
             
         if submit_payment_filter:
+            # Khởi tạo trước 2 biến này: khối "if has_date_error_2" bên dưới nằm NGOÀI
+            # nhánh else, nên nếu tháng/năm sai định dạng mà không khởi tạo sẵn
+            # thì app văng NameError thay vì báo lỗi cho người dùng.
+            has_date_error_2 = False
+            df_pay_display   = pd.DataFrame()
+
             if not validate_month_year(month_input_tab2):
+                has_date_error_2 = True
                 display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
             else:
                 # Nhồi lại Data Engine đặc biệt theo Option Tháng vừa nhập!
@@ -1767,7 +2076,24 @@ if not df_source.empty:
                     except Exception:
                         has_date_error_2 = True
                         display_error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
-            
+
+                # ─────────────────────────────────────────────────────────────
+                # TRẠNG THÁI THANH TOÁN
+                # Đọc đúng nguồn dữ liệu mà kế toán tick ở Tab 5 (GitHub Gist),
+                # để Tab 2 không còn liệt kê trạm đã trả tiền như thể chưa trả.
+                # ─────────────────────────────────────────────────────────────
+                _paid_t2 = _paid_set_for(load_payment_status(), month_input_tab2)
+                df_pay_display["Trạng thái TT"] = (
+                    df_pay_display["mã trạm"].astype(str).str.strip()
+                    .apply(lambda m: "✅ Đã TT" if m in _paid_t2 else "⏳ Chưa TT")
+                )
+
+                # Áp dụng bộ lọc trạng thái do người dùng chọn trong form
+                if "CHƯA" in status_filter_tab2:
+                    df_pay_display = df_pay_display[df_pay_display["Trạng thái TT"] == "⏳ Chưa TT"]
+                elif "ĐÃ" in status_filter_tab2:
+                    df_pay_display = df_pay_display[df_pay_display["Trạng thái TT"] == "✅ Đã TT"]
+
             if has_date_error_2:
                 pass
             elif df_pay_display.empty:
@@ -1780,8 +2106,17 @@ if not df_source.empty:
                 )
                 
                 total_stations = len(df_pay_display)
-                total_amount = df_pay_display["__raw_amount__"].sum()
-                
+                total_amount   = df_pay_display["__raw_amount__"].sum()
+
+                # Tách phần ĐÃ trả ra khỏi phần CÒN PHẢI trả.
+                # "Tổng tiền giải ngân" từ nay là số tiền THỰC SỰ còn phải chuyển,
+                # đã trừ các trạm kế toán đánh dấu Đã TT — tránh cấp quỹ trùng.
+                _mask_paid_t2  = df_pay_display["Trạng thái TT"] == "✅ Đã TT"
+                _n_paid_t2     = int(_mask_paid_t2.sum())
+                _n_unpaid_t2   = total_stations - _n_paid_t2
+                _amt_paid_t2   = df_pay_display.loc[_mask_paid_t2,  "__raw_amount__"].sum()
+                _amt_unpaid_t2 = df_pay_display.loc[~_mask_paid_t2, "__raw_amount__"].sum()
+
                 st.snow()
                 if date_start_tab2.strip() or date_end_tab2.strip():
                     msg_start = date_start_tab2.strip() if date_start_tab2.strip() else "Đầu tháng"
@@ -1790,10 +2125,25 @@ if not df_source.empty:
                 else:
                     st.success(f"🔥 **TỔNG KẾT BÁO CÁO NHANH LŨY KẾ CẢ THÁNG NAY ({month_input_tab2}):**")
                     
-                colA, colB = st.columns(2)
+                colA, colB, colC, colD = st.columns(4)
                 colA.metric("🏢 Tổng số trạm hiển thị:", f"{total_stations} trạm")
-                colB.metric("💰 Tổng tiền giải ngân:", f"{total_amount:,.0f} VNĐ")
-                
+                colB.metric(
+                    "💰 Tổng tiền giải ngân:",
+                    f"{_amt_unpaid_t2:,.0f} VNĐ",
+                    help="Số tiền CÒN PHẢI chuyển — đã trừ các trạm được đánh dấu Đã TT ở Tab 5.",
+                )
+                colC.metric("✅ Đã thanh toán:", f"{_n_paid_t2}/{total_stations} trạm")
+                colD.metric("💸 Tiền đã trả (đã trừ):", f"{_amt_paid_t2:,.0f} VNĐ")
+
+                if _n_paid_t2 > 0:
+                    st.caption(
+                        f"ℹ️ Tổng gộp cả trạm đã TT là **{total_amount:,.0f} VNĐ**; "
+                        f"đã trừ **{_amt_paid_t2:,.0f} VNĐ** của {_n_paid_t2} trạm đánh dấu Đã TT "
+                        f"nên số cần giải ngân thực tế chỉ còn **{_amt_unpaid_t2:,.0f} VNĐ**."
+                    )
+                else:
+                    st.caption(f"ℹ️ Chưa trạm nào trong danh sách này được đánh dấu Đã TT ở Tab 5.")
+
                 st.markdown("---")
                 # --- CẢNH BÁO CHU KỲ TT VƯợT HẠN HĐ ---
                 render_contract_overrun_warning(df_pay_display)
@@ -1802,6 +2152,17 @@ if not df_source.empty:
                 df_clean_tab2 = df_pay_display.drop(["__raw_amount__", "__is_due_this_month__"], axis=1, errors='ignore')
                 # Chèn thêm cột Số thứ tự ở vị trí đầu tiên
                 df_clean_tab2.insert(0, 'STT', range(1, len(df_clean_tab2) + 1))
+                # Đưa cột trạng thái lên ngay sau STT để nhìn phát thấy ngay,
+                # khỏi phải kéo ngang hết bảng mới biết trạm nào đã trả tiền.
+                if "Trạng thái TT" in df_clean_tab2.columns:
+                    df_clean_tab2.insert(1, "Trạng thái TT", df_clean_tab2.pop("Trạng thái TT"))
+
+                # Kéo "Ngày áp dụng giá mới" về nằm ngay sau "giá thuê chủ nhà_mới",
+                # để bộ ba giá cũ → giá mới → ngày áp dụng đứng liền nhau, nhìn là hiểu.
+                if {"giá thuê chủ nhà_mới", "Ngày áp dụng giá mới"} <= set(df_clean_tab2.columns):
+                    _pos = list(df_clean_tab2.columns).index("giá thuê chủ nhà_mới")
+                    df_clean_tab2.insert(_pos + 1, "Ngày áp dụng giá mới",
+                                         df_clean_tab2.pop("Ngày áp dụng giá mới"))
                 
                 # HTML Đỏ Đậm Style cho Tab 2
                 st.markdown("""
@@ -1815,11 +2176,23 @@ if not df_source.empty:
                 """, unsafe_allow_html=True)
                 
                 html_report_2 = df_clean_tab2.to_html(index=False, classes="red-header-table-general", escape=False)
+                # Tô màu ô trạng thái ngay trên HTML (DataFrame vẫn giữ chữ thuần
+                # để file Excel tải về không dính thẻ HTML).
+                html_report_2 = html_report_2.replace(
+                    "<td>✅ Đã TT</td>",
+                    "<td style='background:#e8f5e9;color:#1b5e20;font-weight:900;white-space:nowrap;'>✅ Đã TT</td>"
+                ).replace(
+                    "<td>⏳ Chưa TT</td>",
+                    "<td style='background:#fff3e0;color:#bf360c;font-weight:900;white-space:nowrap;'>⏳ Chưa TT</td>"
+                )
                 st.markdown(html_report_2, unsafe_allow_html=True)
 
                 st.markdown("---")
                 st.markdown("### 🏷️ Chi Tiết Các Trạm (Dạng Thẻ Điện Thoại Phóng To)")
-                render_cards(df_pay_display, is_payment_tab=True)
+                # Đưa "Trạng thái TT" lên dòng đầu của thẻ để xem trên điện thoại
+                # cũng thấy ngay trạm nào đã trả tiền.
+                render_cards(df_pay_display, is_payment_tab=True,
+                             columns_to_show=["Trạng thái TT"] + DISPLAY_COLUMNS)
                 
                 # Nút tải xuống cho báo cáo Tab 2
                 output2 = io.BytesIO()
@@ -2124,7 +2497,10 @@ if not df_source.empty:
 
                         _df_due5["Cú pháp nội dung (Copy App)"] = _df_due5.apply(_gen_subject, axis=1)
 
-                        _cols5 = ["mã trạm","giá thuê chủ nhà","Số tiền cần thanh toán","Số TK chủ nhà",
+                        # Giá cũ → giá mới → ngày áp dụng đứng liền nhau, để kế toán
+                        # nhìn ra ngay trạm nào đã đổi giá và vì sao số tiền lẻ như vậy.
+                        _cols5 = ["mã trạm","giá thuê chủ nhà","giá thuê chủ nhà_mới",
+                                  "Ngày áp dụng giá mới","Số tiền cần thanh toán","Số TK chủ nhà",
                                   "Chủ tài khoản","Tên Ngân Hàng","Ngày tới hạn TT trong tháng",
                                   "Ngày đến hạn TT kỳ tiếp theo","Cú pháp nội dung (Copy App)"]
                         _exist5 = []
@@ -2142,9 +2518,14 @@ if not df_source.empty:
                         st.session_state['t5_df_amounts'] = _df_due5[["mã trạm","__raw_amount__"]].copy()
                         st.session_state['t5_df_due_full'] = _df_due5.copy()  # lưu full để check overrun
                         st.session_state['t5_month']      = month_input_tab5
-                        st.session_state['t5_safe_time']  = month_input_tab5.replace('/', '_')
+                        # Khoá lưu luôn dạng MM_YYYY có số 0 đầu — khớp với banner cảnh báo trễ TT
+                        st.session_state['t5_safe_time']  = _month_key(month_input_tab5)
                         st.session_state['t5_total']      = len(_df_clean5)
                         st.session_state['t5_total_amt']  = _df_due5["__raw_amount__"].sum()
+
+                        # Mỗi lần tra cứu lại → xoá tick đang giữ trong phiên và đọc lại
+                        # từ Gist, để thấy được thay đổi do kế toán khác vừa lưu.
+                        st.session_state.pop(f"pay_status_{st.session_state['t5_safe_time']}", None)
                         st.snow()
 
         # ================================================================
@@ -2196,17 +2577,40 @@ if not df_source.empty:
 
             _sess_key   = f"pay_status_{_stime}"
             _ctr_key    = f"save_ctr_{_stime}"
+            _msg_key    = f"save_msg_{_stime}"
 
             # Khởi tạo save counter
             if _ctr_key not in st.session_state:
                 st.session_state[_ctr_key] = 0
 
-            # Đọc từ JSON nếu session chưa có (lần đầu trong phiên)
-            if _sess_key not in st.session_state:
-                _all_status = load_payment_status()
-                st.session_state[_sess_key] = set(_all_status.get(_stime, []))
+            # --- Kết quả của lần nhấn LƯU trước đó ---
+            # Phải hiển thị Ở ĐÂY chứ không phải ngay sau khi lưu: st.rerun() huỷ toàn bộ
+            # output của lần chạy đó, nên st.success/st.error đặt trước rerun KHÔNG BAO GIỜ
+            # hiện ra — kế toán bấm Lưu mà không thấy phản hồi gì, không biết đã lưu hay chưa.
+            _prev_msg = st.session_state.pop(_msg_key, None)
+            if _prev_msg:
+                if _prev_msg[0] == "ok":
+                    st.success(_prev_msg[1])
+                else:
+                    st.error(_prev_msg[1])
 
-            _paid_set = st.session_state[_sess_key]
+            # --- Cảnh báo khi trạng thái tick KHÔNG được lưu bền vững ---
+            _tok_cfg, _gid_cfg = _get_gist_config()
+            if not (_tok_cfg and _gid_cfg):
+                st.error(
+                    "🚨 **CHƯA CẤU HÌNH GIST_TOKEN / GIST_ID** — trạng thái tick chỉ ghi vào file tạm "
+                    "trên máy chủ. Trên Streamlit Cloud, file này **BỊ XOÁ mỗi lần app khởi động lại**, "
+                    "toàn bộ đánh dấu 'Đã TT' sẽ mất và có nguy cơ **thanh toán trùng lần 2**. "
+                    "Vui lòng khai báo GIST_TOKEN và GIST_ID trong phần Secrets trước khi dùng."
+                )
+
+            # Đọc từ nơi lưu bền vững (dùng khoá đã chuẩn hoá) + nạp nhật ký thao tác
+            _all_status = load_payment_status()
+            if _sess_key not in st.session_state:
+                st.session_state[_sess_key] = _paid_set_for(_all_status, _stime)
+
+            _paid_set  = st.session_state[_sess_key]
+            _audit_map = _audit_lookup(_all_status, _stime)   # {mã trạm: (ai, lúc nào)}
 
             # Progress bar
             _n_paid = len([m for m in _dc["mã trạm"].astype(str).str.strip() if m in _paid_set])
@@ -2238,6 +2642,10 @@ if not df_source.empty:
                 _row_data = {"✅ Đã TT": _ma in _paid_set}
                 for _src_col, _dst_col in _tracker_cols_map.items():
                     _row_data[_dst_col] = _r.get(_src_col, "-") if _src_col in _dc.columns else "-"
+                # Nhật ký: ai đánh dấu đã TT và lúc nào ("-" với dữ liệu lưu trước đây)
+                _who, _when = _audit_map.get(_ma, ("", ""))
+                _row_data["Người tick"] = _who or "-"
+                _row_data["Lúc"]        = _when or "-"
                 _tracker_rows.append(_row_data)
             _df_tracker = pd.DataFrame(_tracker_rows)
 
@@ -2256,7 +2664,8 @@ if not df_source.empty:
                             width="small",
                         )
                     },
-                    disabled=["Mã trạm","Số tiền (VNĐ)","Chủ nhà","Ngân hàng","Ngày TT"],
+                    disabled=["Mã trạm","Số tiền (VNĐ)","Chủ nhà","Ngân hàng","Ngày TT",
+                              "Người tick","Lúc"],
                     use_container_width=True,
                     hide_index=True,
                     key=_editor_key,
@@ -2277,32 +2686,64 @@ if not df_source.empty:
                         if _er.get("✅ Đã TT", False):
                             _new_paid.add(str(_er["Mã trạm"]).strip())
 
-                    # --- FIX: Giữ lại các trạm đã tick trước đó nhưng KHÔNG
-                    # nằm trong danh sách đang hiển thị (do filter ngày/trạm).
+                    # Bỏ cache 30s để đọc bản MỚI NHẤT trên Gist ngay trước khi gộp.
+                    # Nếu đọc bản cache cũ, tick mà kế toán khác vừa lưu trong 30 giây
+                    # trước sẽ bị ghi đè mất → trạm đã trả tiền quay lại trạng thái chưa TT.
+                    try:
+                        _fetch_gist_content.clear()
+                    except Exception:
+                        pass
+
+                    # --- Giữ lại các trạm đã tick trước đó nhưng KHÔNG nằm trong
+                    # danh sách đang hiển thị (do filter ngày/trạm).
                     # Nếu không merge, nhấn Lưu sẽ xoá hết tick của trạm ngoài filter.
-                    _visible_stations = set(_dc["mã trạm"].astype(str).str.strip())
-                    _all_st_for_merge = load_payment_status()
-                    _prev_paid_all    = set(_all_st_for_merge.get(_stime, []))
-                    # Trạm đã tick trước đó nhưng đang bị ẩn (ngoài filter)
+                    _visible_stations  = set(_dc["mã trạm"].astype(str).str.strip())
+                    _all_st            = load_payment_status()
+                    _prev_paid_all     = _paid_set_for(_all_st, _stime)
                     _prev_paid_outside = _prev_paid_all - _visible_stations
-                    # Kết hợp: tick mới (trong filter) + tick cũ (ngoài filter)
-                    _new_paid = _new_paid | _prev_paid_outside
+                    _new_paid          = _new_paid | _prev_paid_outside
 
-                    # Cập nhật session_state
-                    st.session_state[_sess_key] = _new_paid
+                    # Dọn các khoá cũ chưa chuẩn hoá của cùng tháng (vd '8_2026'),
+                    # gộp hết về một khoá duy nhất để không còn nguồn dữ liệu thứ hai.
+                    for _k in [k for k in list(_all_st.keys())
+                               if k != _stime and _month_key(k) == _stime]:
+                        _all_st.pop(_k, None)
 
-                    # Ghi ra JSON bền vững
-                    _all_st = load_payment_status()
-                    _all_st[_stime] = list(_new_paid)
+                    # --- Ghi nhật ký: ai vừa tick / bỏ tick trạm nào, lúc nào ---
+                    _added_t5   = _new_paid - _prev_paid_all
+                    _removed_t5 = _prev_paid_all - _new_paid
+                    if _added_t5 or _removed_t5:
+                        _all_st = _append_audit(_all_st, _stime, _added_t5, _removed_t5)
+
+                    _all_st[_stime] = sorted(_new_paid)
                     _ok = save_payment_status(_all_st)
 
-                    # Tăng counter để data_editor refresh checkbox đúng
-                    st.session_state[_ctr_key] += 1
-
                     if _ok:
-                        st.success(f"✅ Đã lưu! {len(_new_paid)}/{_tot} trạm được đánh dấu ĐÃ thanh toán tháng {_mon}.")
+                        # CHỈ cập nhật giao diện khi đã ghi thành công. Nếu ghi hỏng mà vẫn
+                        # cập nhật, màn hình hiện "đã tick" trong khi Gist chưa có gì —
+                        # hết phiên là mất sạch, dẫn tới thanh toán lại lần nữa.
+                        st.session_state[_sess_key] = _new_paid
+                        st.session_state[_ctr_key] += 1
+                        _chi_tiet = []
+                        if _added_t5:
+                            _chi_tiet.append(f"đánh dấu ĐÃ TT thêm {len(_added_t5)} trạm ({', '.join(sorted(_added_t5)[:5])}{'...' if len(_added_t5) > 5 else ''})")
+                        if _removed_t5:
+                            _chi_tiet.append(f"**bỏ tick {len(_removed_t5)} trạm** ({', '.join(sorted(_removed_t5)[:5])}{'...' if len(_removed_t5) > 5 else ''})")
+                        st.session_state[_msg_key] = (
+                            "ok",
+                            f"✅ Đã lưu bền vững! Tổng {len(_new_paid)} trạm đã thanh toán tháng {_mon}. "
+                            + (("Lần này: " + "; ".join(_chi_tiet) + ". ") if _chi_tiet else "Không có thay đổi nào. ")
+                            + f"Ghi nhận bởi **{_current_user()}**. Trạng thái giữ nguyên kể cả khi app khởi động lại."
+                        )
                     else:
-                        st.error("❌ Lưu file thất bại! Kiểm tra quyền ghi trong thư mục app.")
+                        st.session_state[_msg_key] = (
+                            "err",
+                            "❌ **LƯU THẤT BẠI — các ô vừa tick CHƯA được ghi lại!** "
+                            "Nguyên nhân thường gặp: GIST_TOKEN hết hạn/sai quyền, GIST_ID sai, "
+                            "hoặc máy chủ không vào được GitHub. "
+                            "**Đừng chuyển khoản tiếp** cho tới khi lưu được, vì danh sách đã TT "
+                            "chưa cập nhật và rất dễ trả trùng. Vui lòng thử lại hoặc kiểm tra Secrets."
+                        )
 
                     st.rerun()
 
@@ -2370,6 +2811,37 @@ if not df_source.empty:
                 _df_unpaid_show.insert(0,"STT", range(1, len(_df_unpaid_show)+1))
                 st.markdown(f'<h4 style="color:#bf360c;margin-top:12px;">⏳ Trạm Chưa Thanh Toán ({_cnt_unpaid}/{_tot})</h4>', unsafe_allow_html=True)
                 st.markdown(_df_unpaid_show.to_html(index=False, classes="unpaid-table", escape=False), unsafe_allow_html=True)
+
+            # ================================================================
+            # NHẬT KÝ THAO TÁC — truy vết khi nghi ngờ thanh toán trùng
+            # ================================================================
+            _events = _audit_events(_all_status, _stime)
+            with st.expander(f"📜 Nhật ký thao tác tháng {_mon} ({len(_events)} lượt ghi nhận)"):
+                if not _events:
+                    st.info(
+                        "Chưa có nhật ký cho tháng này. Các lượt tick từ nay về sau sẽ được "
+                        "ghi lại đầy đủ (ai tick, tick trạm nào, lúc nào, có bỏ tick hay không). "
+                        "Dữ liệu đã lưu trước đây không có thông tin này nên hiển thị dấu '-'."
+                    )
+                else:
+                    _df_log = pd.DataFrame([{
+                        "Thời điểm":  e.get("at", "-"),
+                        "Người thực hiện": e.get("by", "-"),
+                        "Hành động":  "✅ Đánh dấu ĐÃ TT" if e.get("viec") == "tick" else "↩️ BỎ tick",
+                        "Mã trạm":    e.get("ma_tram", "-"),
+                    } for e in _events])
+                    _df_log.insert(0, "STT", range(1, len(_df_log) + 1))
+                    st.markdown("""
+                    <style>
+                    .audit-table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0;}
+                    .audit-table th{background:#ede7f6!important;color:#4527a0!important;font-weight:900!important;
+                                    border:1px solid #d1c4e9;padding:8px;white-space:nowrap;}
+                    .audit-table td{border:1px solid #e0e0e0;padding:6px 8px;}
+                    .audit-table tr:nth-child(even){background:#faf8ff;}
+                    </style>""", unsafe_allow_html=True)
+                    st.markdown(_df_log.to_html(index=False, classes="audit-table", escape=False),
+                                unsafe_allow_html=True)
+                    st.caption("Mới nhất xếp trên cùng. Hệ thống giữ 1000 sự kiện gần nhất.")
 
             # ---- Tải Excel đầy đủ (3 sheet) ----
             st.markdown("---")
@@ -3271,16 +3743,8 @@ if not df_source.empty:
         new_expiry_col = "Ngày hết hạn hợp đồng_mới"
         sign_col       = "Ngày ký HĐ Chủ nhà_trên HĐ"
 
-        # Ưu tiên cột mới nếu có dữ liệu, fallback về cột cũ
-        def _resolve_expiry_t9(row):
-            raw = str(row.get(new_expiry_col, '')).strip()
-            if raw and raw not in ('-', 'nan', ''):
-                dt = _parse_any_date(raw)
-                if dt:
-                    return dt
-            return _parse_any_date(row.get(expiry_col, ''))
-
-        df_t9["__expiry_dt__"] = df_t9.apply(_resolve_expiry_t9, axis=1)
+        # Ưu tiên cột mới nếu có dữ liệu, fallback về cột cũ (dùng chung _resolve_expiry_date)
+        df_t9["__expiry_dt__"] = df_t9.apply(_resolve_expiry_date, axis=1)
 
         # Tính số tháng còn lại (float, làm tròn 1 chữ số thập phân)
         def months_remaining(expiry_dt):

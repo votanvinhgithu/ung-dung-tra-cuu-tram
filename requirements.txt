@@ -1,5 +1,8 @@
-streamlit
-pandas
-openpyxl
-folium
-streamlit-folium
+streamlit>=1.50
+pandas>=2.2,<3.0
+openpyxl>=3.1
+folium>=0.19
+streamlit-folium>=0.25
+requests>=2.32
+altair>=5.5
+tzdata>=2024.1
