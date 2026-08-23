@@ -916,6 +916,11 @@ TARGET_COLUMNS = [
     "Link Hồ Sơ Drive"
 ]
 
+# Thông tin chuyển khoản — LẤY TỪ SHEET 2, chỉ dùng Sheet 1 khi Sheet 2 bỏ trống.
+# Sheet 1 đang lưu cả lịch sử đổi chủ trong một ô (vd "Nguyễn Phi Hiệp -> La Ngọc Linh",
+# số TK "19022625139011 66646" là 2 tài khoản dính nhau), không dùng để chuyển tiền được.
+BANK_FIELDS = ["Số TK chủ nhà", "Chủ tài khoản", "Tên Ngân Hàng"]
+
 EXTRA_PAY_COLS = [
     "Ngày tới hạn TT trong tháng",
     "Ngày TT kỳ trước",
@@ -1045,12 +1050,21 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         if "chu kỳ" in str(c).strip().lower():
             cycle_col = c
             break
+
+    # Cột thông tin ngân hàng ở Sheet 2 (Số TK / Chủ tài khoản / Tên Ngân Hàng)
+    bank_cols = {}
+    for f in BANK_FIELDS:
+        for c in df_pay.columns:
+            if str(c).strip().lower() == f.strip().lower():
+                bank_cols[f] = c
+                break
     # ─────────────────────────────────────────────────────────────────────────
 
     if not ma_tram_col: return df_main # Bỏ qua nếu sheet 2 không có cột mã trạm
 
     # Loại tất cả cột đặc biệt ra khỏi date_cols (chỉ giữ lại cột ngày TT)
     _special_cols = {ma_tram_col, amount_col, new_amount_col, new_price_date_col, cycle_col}
+    _special_cols |= set(bank_cols.values())
     date_cols = [c for c in df_pay.columns if c not in _special_cols]
     
     for _, row in df_pay.iterrows():
@@ -1073,6 +1087,17 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
                     new_amount_val = float(str(raw_new_amt).replace(',', '').replace(' ', ''))
                 except:
                     pass
+
+        # Đọc thông tin ngân hàng ở Sheet 2
+        bank_info = {}
+        for _f, _c in bank_cols.items():
+            _v = row.get(_c, None)
+            if _v is not None and pd.notna(_v):
+                _sv = str(_v).strip()
+                if _sv.endswith(".0"):      # Excel đọc số TK thành 66646.0
+                    _sv = _sv[:-2]
+                if _sv and _sv.lower() != "nan":
+                    bank_info[_f] = _sv
 
         # Đọc chu kỳ thanh toán ở Sheet 2 (giữ nguyên chữ, vd "3 tháng", "1 năm")
         cycle_raw_s2 = ""
@@ -1133,6 +1158,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             "Ngày TT kỳ trước": fmt(prev_date),
             "Ngày đến hạn TT kỳ tiếp theo": fmt(next_date),
             "__raw_amount__": amount_val,
+            "__bank__": bank_info,                      # thông tin CK lấy từ Sheet 2
             "__cycle_raw__": cycle_raw_s2,              # chu kỳ TT lấy từ Sheet 2
             "__new_amount__": new_amount_val,           # giá thuê mới (0.0 nếu không có)
             "__new_price_dt__": new_price_dt_inner,     # datetime hoặc None
@@ -1155,6 +1181,8 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         # Đè cột chu kỳ của Sheet 1 bằng chu kỳ THỰC SỰ dùng để tính tiền,
         # để con số hiển thị và con số tính toán không bao giờ nói khác nhau.
         "chu kỳ thanh toán cho chủ nhà": [],
+        # Thông tin chuyển khoản lấy từ Sheet 2 (xem BANK_FIELDS)
+        **{f: [] for f in BANK_FIELDS},
         "__raw_amount__": [],
         "__is_due_this_month__": []
     }
@@ -1278,6 +1306,17 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         new_cols["giá thuê chủ nhà_mới"].append(formatted_new_price)
         new_cols["Ngày áp dụng giá mới"].append(formatted_new_date)
         new_cols["chu kỳ thanh toán cho chủ nhà"].append(cycle_display)
+
+        # Thông tin chuyển khoản: ưu tiên Sheet 2, trống mới lấy Sheet 1.
+        # 17 trạm không có trong Sheet 2 vẫn giữ nguyên dữ liệu Sheet 1 như cũ.
+        _bank = info.get("__bank__", {}) or {}
+        for _f in BANK_FIELDS:
+            _v2 = str(_bank.get(_f, "")).strip()
+            if _v2 and _v2.lower() != "nan":
+                new_cols[_f].append(_v2)
+            else:
+                _v1 = str(row.get(_f, "")).strip()
+                new_cols[_f].append("" if _v1.lower() == "nan" else _v1)
         new_cols["Số tiền cần thanh toán"].append(formatted_amount)
         new_cols["__raw_amount__"].append(calc_amount)
         new_cols["__is_due_this_month__"].append(info.get("__is_due_this_month__", False))
