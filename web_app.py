@@ -1578,7 +1578,25 @@ def _load_revenue_cached(file_source, target_month_str, version):
                 
             if not monthly_col:
                 monthly_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
-            date_cols = [c for c in df.columns if c != ma_col and c != monthly_col and c != last_col_idx]
+            # Cột mã riêng của nhà mạng: "Mã Vina" / "Mã Mobi" (Viettel không có cột này)
+            code_col = next((c for c in df.columns
+                             if str(c).strip().lower() == f"mã {provider_keyword.lower()}"), None)
+
+            def _khong_phai_cot_ngay(c):
+                """
+                Loại các cột CHẮC CHẮN không phải mốc thanh toán ra khỏi vùng quét ngày.
+                Quan trọng: cột 'Ký ngày' chứa chuỗi kiểu '01/09/2022' sẽ bị pd.to_datetime
+                hiểu thành một kỳ thanh toán, làm trạm hiện nhầm ở tháng không đến hạn.
+                """
+                cl = str(c).strip().lower()
+                return (cl.startswith("mã") or cl.startswith("stt")
+                        or "tên trạm" in cl or "ghi chú" in cl or "note" in cl
+                        or "chu kỳ" in cl or "ký ngày" in cl or "ngày ký" in cl
+                        or "loại" in cl)
+
+            date_cols = [c for c in df.columns
+                         if c not in (ma_col, monthly_col, last_col_idx, code_col)
+                         and not _khong_phai_cot_ngay(c)]
             
             import re
             records = []
@@ -1629,8 +1647,17 @@ def _load_revenue_cached(file_source, target_month_str, version):
                 monthly_val = parse_vn_money(row[monthly_col])
                 payment_val = parse_vn_money(row[last_col_idx])
                     
+                # Mã riêng của nhà mạng, đặt ngay cạnh mã trạm cho dễ đối chiếu
+                _rec = {'Mã trạm': str(row[ma_col]).strip() if pd.notna(row[ma_col]) else ""}
+                if code_col is not None:
+                    _cv = row.get(code_col, None)
+                    _cs = str(_cv).strip() if _cv is not None and pd.notna(_cv) else ""
+                    if _cs.endswith(".0"):
+                        _cs = _cs[:-2]
+                    _rec[f'Mã {provider_keyword}'] = _cs if _cs and _cs.lower() != "nan" else "-"
+
                 records.append({
-                    'Mã trạm': str(row[ma_col]).strip() if pd.notna(row[ma_col]) else "",
+                    **_rec,
                     f'Số tiền {provider_keyword} trả/tháng': f"{monthly_val:,.0f}" if monthly_val > 0 else "-",
                     f'Kỳ {provider_keyword} thanh toán': due_date.strftime('%m/%d/%Y'),
                     'Ngày đến kỳ thanh toán tiếp theo': next_due_date_str,
@@ -2619,7 +2646,7 @@ if not df_source.empty:
             COL_LK = {"Viettel": "Viettel đã trả lũy kế",
                       "Vina":    "Vina đã trả lũy kế",
                       "Mobi":    "Mobi đã trả lũy kế",
-                      "Tong":    "Tổng đã trả lũy kế"}
+                      "Tong":    "Sum số tiền lũy kế nhà mạng đã trả"}
             with _summary_box:
                 st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>',
                             unsafe_allow_html=True)
@@ -2636,12 +2663,16 @@ if not df_source.empty:
                 })
                 df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
                 _html3 = df_summ.to_html(index=False, classes="red-header-table", escape=False)
-                # Header các cột lũy kế: chữ XANH LÁ ĐẬM cho dễ phân biệt với cột doanh thu
+                # Header các cột lũy kế: chữ XANH LÁ ĐẬM cho dễ phân biệt với cột doanh thu.
+                # Dùng regex (không phải replace chuỗi cứng) để không lệ thuộc việc pandas
+                # có chèn thêm khoảng trắng hay thuộc tính vào thẻ <th> hay không.
+                _CSS_XANH = ("color:#1b5e20 !important;background:#e8f5e9 !important;"
+                             "font-weight:900 !important;border-bottom:3px solid #2e7d32 !important;")
                 for _c in COL_LK.values():
-                    _html3 = _html3.replace(
-                        f"<th>{_c}</th>",
-                        f"<th style='color:#1b5e20 !important;background:#e8f5e9 !important;"
-                        f"font-weight:900 !important;'>{_c}</th>")
+                    _html3 = re.sub(
+                        r"<th[^>]*>\s*" + re.escape(_c) + r"\s*</th>",
+                        f"<th style=\"{_CSS_XANH}\">{_c}</th>",
+                        _html3)
                 st.markdown(_html3, unsafe_allow_html=True)
                 st.caption("🟢 Cột chữ xanh lá = tiền nhà mạng **đã thực trả**, cộng dồn theo các trạm được tick ở bảng dưới.")
 
