@@ -235,6 +235,41 @@ def _audit_events(all_status: dict, month_key: str) -> list:
             if isinstance(e, dict) and e.get("thang") == month_key]
 
 
+# ============================================================
+# TRẠNG THÁI NHÀ MẠNG ĐÃ THANH TOÁN CHO CÔNG TY (Tab 3)
+# Lưu chung trong Gist dưới khoá "__revenue__", tách hẳn khỏi khoá tháng của
+# tiền chủ nhà nên không ảnh hưởng dữ liệu cũ:
+#   {"__revenue__": {"08_2026": {"viettel": [...], "vina": [...], "mobi": [...]}}}
+# ============================================================
+REVENUE_KEY = "__revenue__"
+PROVIDERS   = ["Viettel", "Vina", "Mobi"]
+
+
+def _rev_paid_set(all_status: dict, month_str, provider: str) -> set:
+    """Tập mã trạm mà nhà mạng đã thanh toán, của một tháng."""
+    try:
+        blk = all_status.get(REVENUE_KEY, {}) or {}
+        thang = blk.get(_month_key(month_str), {}) or {}
+        return {str(x).strip() for x in (thang.get(provider.lower(), []) or []) if str(x).strip()}
+    except Exception:
+        return set()
+
+
+def _rev_store(all_status: dict, month_str, provider: str, codes) -> dict:
+    """Ghi tập mã trạm đã thu tiền của một nhà mạng trong một tháng."""
+    blk = all_status.get(REVENUE_KEY)
+    if not isinstance(blk, dict):
+        blk = {}
+    key = _month_key(month_str)
+    thang = blk.get(key)
+    if not isinstance(thang, dict):
+        thang = {}
+    thang[provider.lower()] = sorted({str(c).strip() for c in codes if str(c).strip()})
+    blk[key] = thang
+    all_status[REVENUE_KEY] = blk
+    return all_status
+
+
 def load_payment_status() -> dict:
     """
     Đọc trạng thái thanh toán.
@@ -469,6 +504,102 @@ def render_overdue_banner(f_source):
         <div class="overdue-ticker-inner">
             <span>{full_text_double}</span>
         </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def get_revenue_unpaid_alert(f_source, months_back: int = 6):
+    """
+    Các tháng ĐÃ KẾT THÚC mà nhà mạng còn trạm chưa được tick "đã thanh toán".
+    Chỉ xét từ tháng trước trở về — tháng đang chạy chưa tới hạn nên không cảnh báo.
+    Trả về {'Viettel': [(mã trạm, 'MM/YYYY'), ...], 'Vina': [...], 'Mobi': [...]}
+    """
+    out = {p: [] for p in PROVIDERS}
+    if f_source is None:
+        return out
+    today = _today()
+    all_status = load_payment_status()
+
+    m, y = today.month, today.year
+    for _ in range(months_back):
+        m -= 1                       # bắt đầu từ THÁNG TRƯỚC
+        if m == 0:
+            m, y = 12, y - 1
+        month_str = f"{m:02d}/{y}"
+        try:
+            dfs = load_revenue_data_v2(f_source, month_str)
+        except Exception:
+            continue
+        for df_p, prov in zip(dfs, PROVIDERS):
+            if df_p is None or df_p.empty:
+                continue
+            da_tt = _rev_paid_set(all_status, month_str, prov)
+            for ma in df_p["Mã trạm"].astype(str).str.strip():
+                if ma and ma.lower() != "nan" and ma not in da_tt:
+                    out[prov].append((ma, month_str))
+    return out
+
+
+def render_revenue_unpaid_banner(f_source):
+    """Banner chạy chữ: nhà mạng nào còn trạm chưa thu được tiền."""
+    alert = get_revenue_unpaid_alert(f_source)
+    if not any(alert.values()):
+        return
+
+    # Liệt kê tối đa 12 trạm mỗi nhà mạng — nhiều hơn thì băng chữ dài tới mức
+    # không đọc được. Phần còn lại nói rõ số lượng chứ không cắt âm thầm.
+    MAX_LIET_KE = 12
+    parts = []
+    for prov in PROVIDERS:
+        lst = alert.get(prov, [])
+        if not lst:
+            continue
+        hien = lst[:MAX_LIET_KE]
+        ds = '; '.join(f"{ma} ({th})" for ma, th in hien)
+        if len(lst) > MAX_LIET_KE:
+            ds += f"; …và {len(lst) - MAX_LIET_KE} trạm khác — xem đầy đủ ở bảng bên dưới"
+        parts.append(f"📡 Mạng {prov} còn {len(lst)} trạm ({ds}) chưa thanh toán, "
+                     f"hoặc bạn chưa tick thanh toán, vui lòng theo dõi")
+
+    full = "      ★      ".join(parts) + "      "
+    full_dbl = full + "        " + full
+    duration = max(20, len(full) * 0.18)
+
+    st.markdown(f"""
+    <style>
+    @keyframes rev-scroll {{
+        0%   {{ transform: translateX(0); }}
+        100% {{ transform: translateX(-50%); }}
+    }}
+    .rev-ticker-wrap {{
+        width:100%; overflow:hidden;
+        background:linear-gradient(90deg,#001a0d 0%,#00381c 40%,#001a0d 100%);
+        border:2px solid #00c853; border-radius:8px;
+        padding:10px 0; margin-bottom:14px;
+        box-shadow:0 0 12px rgba(0,200,83,0.45);
+    }}
+    .rev-ticker-inner {{
+        display:inline-block; white-space:nowrap;
+        animation: rev-scroll {duration:.1f}s linear infinite; will-change:transform;
+    }}
+    .rev-ticker-inner span {{
+        font-size:15px; font-weight:900; color:#69f0ae;
+        letter-spacing:0.5px; font-family:'Courier New',monospace;
+    }}
+    .rev-badge {{
+        display:inline-block; background:#00c853; color:#00251a;
+        font-weight:900; font-size:13px; padding:2px 10px; border-radius:12px;
+        margin-right:10px; vertical-align:middle;
+        animation: pulse-rev 1s ease-in-out infinite alternate;
+    }}
+    @keyframes pulse-rev {{
+        from {{ box-shadow:0 0 4px #00c853; }}
+        to   {{ box-shadow:0 0 14px #69f0ae, 0 0 4px #00c853; }}
+    }}
+    </style>
+    <div class="rev-ticker-wrap">
+        <span class="rev-badge">💰 CHƯA THU</span>
+        <div class="rev-ticker-inner"><span>{full_dbl}</span></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -792,6 +923,23 @@ def _get_allowed_emails():
         return [e.strip().lower() for e in allowed], [e.strip().lower() for e in ketoan]
     except Exception:
         return [], []
+
+def can_edit_revenue() -> bool:
+    """
+    Quyền tick "nhà mạng đã thanh toán" ở TAB 3 — MỞ CHO CẢ 3 tài khoản.
+    Khác với Tab 5 (tiền trả chủ nhà) chỉ kế toán mới được tick.
+    Ai vào được app đều đã qua whitelist ALLOWED_EMAILS nên đều được tick ở đây;
+    mọi thao tác vẫn được ghi lại trong nhật ký kèm tên người thực hiện.
+    """
+    try:
+        allowed, _ = _get_allowed_emails()
+        if not allowed:
+            return True        # chạy local/dev không có secrets
+        email = str(st.session_state.get("user_email", "")).strip().lower()
+        return email in allowed
+    except Exception:
+        return True
+
 
 def is_ketoan():
     """True nếu user hiện tại thuộc danh sách kế toán."""
@@ -1360,8 +1508,26 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
     return df_res
 
 # --- HÀM XỬ LÝ DOANH THU NHÀ MẠNG (TAB 3) ---
-# (Đã tắt @st.cache_data để file Excel vừa lưu sửa là Cập nhật lên Web ngay lập tức, không bị kẹt bộ nhớ tạm)
+@st.cache_data(ttl=3600, show_spinner=False)
+def _read_provider_sheets(file_source, version):
+    """Đọc 3 sheet nhà mạng MỘT LẦN rồi dùng lại cho mọi tháng."""
+    if hasattr(file_source, 'seek'):
+        file_source.seek(0)
+    xl = pd.ExcelFile(file_source)
+    out = {}
+    for kw in PROVIDERS:
+        name = next((s for s in xl.sheet_names if kw.lower() in s.lower()), None)
+        out[kw] = pd.read_excel(xl, sheet_name=name) if name else None
+    return out
+
+
 def load_revenue_data_v2(file_source, target_month_str):
+    """Vỏ bọc gắn dấu vân tay file vào khoá cache (file đổi là cache hết hiệu lực ngay)."""
+    return _load_revenue_cached(file_source, target_month_str, _source_version(file_source))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_revenue_cached(file_source, target_month_str, version):
     try:
         parts = str(target_month_str).strip().split('/')
         now = _today()   # gọi 1 lần — tránh lệch nếu qua đầu tháng đúng lúc thực thi
@@ -1376,17 +1542,11 @@ def load_revenue_data_v2(file_source, target_month_str):
             target_month = now.month
             target_year  = now.year
             
-        if hasattr(file_source, 'seek'):
-            file_source.seek(0)
-        xl = pd.ExcelFile(file_source)
-        sheets = xl.sheet_names
-        
+        _prov_sheets = _read_provider_sheets(file_source, version)
+
         def process_provider(provider_keyword):
-            target_sheet = next((s for s in sheets if provider_keyword.lower() in s.lower()), None)
-            if not target_sheet: return None
-            
-            df = pd.read_excel(file_source, sheet_name=target_sheet)
-            if df.empty: return None
+            df = _prov_sheets.get(provider_keyword)
+            if df is None or df.empty: return None
             
             ma_col = df.columns[0]
             for c in df.columns:
@@ -2311,11 +2471,17 @@ if not df_source.empty:
     # ------------ TAB 3: DOANH THU NHÀ MẠNG ------------
     with tab3:
         st.markdown(f"### 💰 Báo Cáo Nhận Doanh Thu Từ Các Nhà Mạng")
+
+        # --- BANNER: nhà mạng còn trạm chưa thanh toán ở các tháng ĐÃ KẾT THÚC ---
+        render_revenue_unpaid_banner(DEFAULT_FILE if DEFAULT_FILE else uploaded_file)
+
         with st.form(key='revenue_form'):
             st.info("Hệ thống tự động tra cứu Dữ liệu Doanh thu từ 3 Sheet (Trạm Viettel thanh toán, Trạm Vina thanh toán, Trạm Mobi thanh toán). Cột SỐ TIỀN THANH TOÁN (1 kỳ) sẽ móc mặc định từ Cột Cuối Cùng của mỗi bảng trên file Excel!")
             month_input_tab3 = st.text_input("📅 Nhập định dạng Tháng/Năm Doanh Thu (MM/YYYY):", value=current_mm_yyyy)
             submit_revenue = st.form_submit_button(label="🔍 LÊN BÁO CÁO DOANH THU", use_container_width=True)
             
+        # Lưu kết quả vào session_state để không bị mất khi tick checkbox (mỗi lần
+        # tick là Streamlit chạy lại toàn bộ script).
         if submit_revenue:
             if not validate_month_year(month_input_tab3):
                 display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
@@ -2324,78 +2490,180 @@ if not df_source.empty:
                 if f_source is None:
                     st.warning("⚠️ Không tìm thấy File dữ liệu (Upload hoặc Local) để phân tích Doanh thu!")
                 else:
-                    df_viettel, df_vina, df_mobi = load_revenue_data_v2(f_source, month_input_tab3)
-                    
-                    sv = df_viettel['__raw_payment__'].sum() if (df_viettel is not None and not df_viettel.empty) else 0.0
-                    svina = df_vina['__raw_payment__'].sum() if (df_vina is not None and not df_vina.empty) else 0.0
-                    smobi = df_mobi['__raw_payment__'].sum() if (df_mobi is not None and not df_mobi.empty) else 0.0
-                    total_all = sv + svina + smobi
-                    
+                    _dv, _dvi, _dm = load_revenue_data_v2(f_source, month_input_tab3)
+                    st.session_state['t3_dfs']   = (_dv, _dvi, _dm)
+                    st.session_state['t3_month'] = month_input_tab3
+                    # Tra cứu lại thì đọc lại trạng thái tick từ Gist
+                    st.session_state.pop(f"rev_paid_{_month_key(month_input_tab3)}", None)
                     st.snow()
-                    st.success(f"🔥 **BÁO CÁO DOANH THU CÁC NHÀ MẠNG THÁNG {month_input_tab3} HOÀN TẤT!**")
-                    
-                    # Inject Custom HTML Table Style 100% Force Red Bold
-                    st.markdown("""
-                    <style>
-                    .red-header-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
-                    .red-header-table th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
-                    .red-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
-                    .red-header-table tr:nth-child(even) { background-color: #f9f9f9; }
-                    .red-header-table tr:hover { background-color: #f1f1f1; }
-                    </style>
-                    """, unsafe_allow_html=True)
-                    
-                    st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>', unsafe_allow_html=True)
-                    df_summ = pd.DataFrame({
-                        "Tháng Công ty có doanh thu": [month_input_tab3],
-                        "sum số tiền Viettel thanh toán": [f"{sv:,.0f}"],
-                        "sum số tiền Vina thanh toán": [f"{svina:,.0f}"],
-                        "sum số tiền Mobi thanh toán": [f"{smobi:,.0f}"],
-                        "sum tổng số tiền Viettel+Vina+Mobi thanh toán": [f"{total_all:,.0f}"]
-                    })
-                    # Chèn STT
-                    df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
-                    
-                    # Render Html Table
-                    html_summ = df_summ.to_html(index=False, classes="red-header-table", escape=False)
-                    st.markdown(html_summ, unsafe_allow_html=True)
-                    
-                    def render_provider_table(df_prov, name, b_num):
-                        if df_prov is not None and not df_prov.empty:
-                            st.markdown(f"---")
-                            st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
-                            df_d = df_prov.drop(['__raw_payment__'], axis=1, errors='ignore')
-                            df_d.insert(0, 'STT', range(1, len(df_d) + 1))
-                            # Render Html Table
-                            html_d = df_d.to_html(index=False, classes="red-header-table", escape=False)
-                            st.markdown(html_d, unsafe_allow_html=True)
-                        else:
-                            st.markdown(f"---")
-                            st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>', unsafe_allow_html=True)
-                            st.info(f"Không có số liệu hoặc thiếu Sheet '{name}' chưa đúng tên theo yêu cầu.")
-                            
-                    render_provider_table(df_viettel, "Viettel", 2)
-                    render_provider_table(df_vina, "Vina", 3)
-                    render_provider_table(df_mobi, "Mobi", 4)
-                    
-                    st.markdown("---")
-                    out_rev = io.BytesIO()
-                    with pd.ExcelWriter(out_rev, engine='openpyxl') as writer:
-                        df_summ.to_excel(writer, index=False, sheet_name='Tong_Hop_Doanh_Thu')
-                        if df_viettel is not None and not df_viettel.empty:
-                            df_viettel.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Viettel')
-                        if df_vina is not None and not df_vina.empty:
-                            df_vina.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Vina')
-                        if df_mobi is not None and not df_mobi.empty:
-                            df_mobi.drop(['__raw_payment__'], axis=1, errors='ignore').to_excel(writer, index=False, sheet_name='Mobi')
-                            
-                    st.download_button(
-                        label="🔽 TẢI XUỐNG FILE TỔNG HỢP DOANH THU (EXCEL)",
-                        data=out_rev.getvalue(),
-                        file_name=f"Bao_Cao_Doanh_Thu_Nha_Mang_{month_input_tab3.replace('/','_')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
+
+        # ================================================================
+        # HIỂN THỊ KẾT QUẢ — nằm NGOÀI if submit_revenue để giữ qua mọi rerun
+        # ================================================================
+        if 't3_month' in st.session_state:
+            _m3  = st.session_state['t3_month']
+            _mk3 = _month_key(_m3)
+            df_viettel, df_vina, df_mobi = st.session_state['t3_dfs']
+
+            st.success(f"🔥 **BÁO CÁO DOANH THU CÁC NHÀ MẠNG THÁNG {_m3} HOÀN TẤT!**")
+
+            st.markdown("""
+            <style>
+            .red-header-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-family: "Source Sans Pro", sans-serif; }
+            .red-header-table th { background-color: #ffeaea !important; color: #ff0000 !important; font-weight: 900 !important; border: 1px solid #e0e0e0; padding: 10px; text-align: left; font-size: 15px; }
+            .red-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
+            .red-header-table tr:nth-child(even) { background-color: #f9f9f9; }
+            .red-header-table tr:hover { background-color: #f1f1f1; }
+            </style>
+            """, unsafe_allow_html=True)
+
+            _all_st3 = load_payment_status()
+            _ctr3_key = f"rev_ctr_{_mk3}"
+            if _ctr3_key not in st.session_state:
+                st.session_state[_ctr3_key] = 0
+
+            # Thông báo của lần Lưu trước (st.rerun() nuốt mất nếu hiện ngay lúc lưu)
+            _msg3_key = f"rev_msg_{_mk3}"
+            _msg3 = st.session_state.pop(_msg3_key, None)
+            if _msg3:
+                (st.success if _msg3[0] == "ok" else st.error)(_msg3[1])
+
+            # Chỗ dành sẵn cho Bảng 1 — điền sau khi biết trạm nào được tick
+            _summary_box = st.container()
+
+            _ticked = {}       # {nhà mạng: set mã trạm đang tick}
+            _paid_amt = {}     # {nhà mạng: tiền đã thu}
+
+            def render_provider_table(df_prov, name, b_num):
+                st.markdown("---")
+                st.markdown(f'<h3 style="color:red; font-weight:bold;">📡 Bảng {b_num}: Doanh thu Trạm {name} TT</h3>',
+                            unsafe_allow_html=True)
+                if df_prov is None or df_prov.empty:
+                    st.info(f"Không có số liệu hoặc thiếu Sheet '{name}' chưa đúng tên theo yêu cầu.")
+                    _ticked[name] = set(); _paid_amt[name] = 0.0
+                    return
+
+                _da_tt = _rev_paid_set(_all_st3, _m3, name)
+                _df_d = df_prov.drop(['__raw_payment__'], axis=1, errors='ignore').copy()
+                _df_d.insert(0, "✅ Đã TT", [str(x).strip() in _da_tt
+                                             for x in df_prov["Mã trạm"].astype(str)])
+                _khoa = [c for c in _df_d.columns if c != "✅ Đã TT"]
+
+                if can_edit_revenue():
+                    _ed = st.data_editor(
+                        _df_d,
+                        column_config={"✅ Đã TT": st.column_config.CheckboxColumn(
+                            "✅ Đã TT", help=f"Tick khi {name} đã chuyển tiền cho công ty",
+                            default=False, width="small")},
+                        disabled=_khoa, use_container_width=True, hide_index=True,
+                        key=f"rev_editor_{name}_{_mk3}_{st.session_state[_ctr3_key]}",
                     )
+                else:
+                    st.dataframe(_df_d, use_container_width=True, hide_index=True)
+                    _ed = _df_d
+
+                _sel = {str(r["Mã trạm"]).strip() for _, r in _ed.iterrows() if r.get("✅ Đã TT", False)}
+                _ticked[name] = _sel
+                _mask = df_prov["Mã trạm"].astype(str).str.strip().isin(_sel)
+                _paid_amt[name] = float(df_prov.loc[_mask, "__raw_payment__"].sum())
+                st.caption(f"✅ Đã thu {len(_sel)}/{len(df_prov)} trạm — "
+                           f"**{_paid_amt[name]:,.0f} đ** / {df_prov['__raw_payment__'].sum():,.0f} đ")
+
+            render_provider_table(df_viettel, "Viettel", 2)
+            render_provider_table(df_vina,    "Vina",    3)
+            render_provider_table(df_mobi,    "Mobi",    4)
+
+            # ---- Nút lưu (cả 3 tài khoản đều được) ----
+            if can_edit_revenue():
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                if st.button("💾  LƯU TRẠNG THÁI NHÀ MẠNG ĐÃ THANH TOÁN",
+                             use_container_width=True, type="primary",
+                             key=f"rev_save_{_mk3}_{st.session_state[_ctr3_key]}"):
+                    try:
+                        _fetch_gist_content.clear()
+                    except Exception:
+                        pass
+                    _st_now = load_payment_status()
+                    _them, _bo = [], []
+                    for _p in PROVIDERS:
+                        _cu = _rev_paid_set(_st_now, _m3, _p)
+                        _moi = _ticked.get(_p, set())
+                        _them += [f"{_p}:{x}" for x in sorted(_moi - _cu)]
+                        _bo   += [f"{_p}:{x}" for x in sorted(_cu - _moi)]
+                        _st_now = _rev_store(_st_now, _m3, _p, _moi)
+                    if _them or _bo:
+                        _st_now = _append_audit(_st_now, f"DT_{_mk3}", set(_them), set(_bo))
+                    if save_payment_status(_st_now):
+                        st.session_state[_ctr3_key] += 1
+                        _chi = []
+                        if _them: _chi.append(f"đánh dấu ĐÃ THU {len(_them)} trạm")
+                        if _bo:   _chi.append(f"**bỏ tick {len(_bo)} trạm**")
+                        st.session_state[_msg3_key] = ("ok",
+                            "✅ Đã lưu bền vững! " + ("; ".join(_chi) + ". " if _chi else "Không có thay đổi. ")
+                            + f"Ghi nhận bởi **{_current_user()}**.")
+                    else:
+                        st.session_state[_msg3_key] = ("err",
+                            "❌ **LƯU THẤT BẠI — các ô vừa tick CHƯA được ghi lại!** "
+                            "Kiểm tra GIST_TOKEN / GIST_ID rồi thử lại.")
+                    st.rerun()
+            else:
+                st.info("🔒 Tài khoản của bạn chưa được cấp quyền cập nhật trạng thái thu tiền.")
+
+            # ---- BẢNG 1: điền vào chỗ đã dành sẵn ----
+            _sv  = df_viettel['__raw_payment__'].sum() if (df_viettel is not None and not df_viettel.empty) else 0.0
+            _svi = df_vina['__raw_payment__'].sum()    if (df_vina    is not None and not df_vina.empty)    else 0.0
+            _smo = df_mobi['__raw_payment__'].sum()    if (df_mobi    is not None and not df_mobi.empty)    else 0.0
+            _tot3 = _sv + _svi + _smo
+            _pv, _pvi, _pmo = _paid_amt.get("Viettel",0.0), _paid_amt.get("Vina",0.0), _paid_amt.get("Mobi",0.0)
+
+            COL_LK = {"Viettel": "Viettel đã trả lũy kế",
+                      "Vina":    "Vina đã trả lũy kế",
+                      "Mobi":    "Mobi đã trả lũy kế",
+                      "Tong":    "Tổng đã trả lũy kế"}
+            with _summary_box:
+                st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>',
+                            unsafe_allow_html=True)
+                df_summ = pd.DataFrame({
+                    "Tháng Công ty có doanh thu": [_m3],
+                    "sum số tiền Viettel thanh toán": [f"{_sv:,.0f}"],
+                    "sum số tiền Vina thanh toán":    [f"{_svi:,.0f}"],
+                    "sum số tiền Mobi thanh toán":    [f"{_smo:,.0f}"],
+                    "sum tổng số tiền Viettel+Vina+Mobi thanh toán": [f"{_tot3:,.0f}"],
+                    COL_LK["Viettel"]: [f"{_pv:,.0f}"],
+                    COL_LK["Vina"]:    [f"{_pvi:,.0f}"],
+                    COL_LK["Mobi"]:    [f"{_pmo:,.0f}"],
+                    COL_LK["Tong"]:    [f"{_pv+_pvi+_pmo:,.0f}"],
+                })
+                df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
+                _html3 = df_summ.to_html(index=False, classes="red-header-table", escape=False)
+                # Header các cột lũy kế: chữ XANH LÁ ĐẬM cho dễ phân biệt với cột doanh thu
+                for _c in COL_LK.values():
+                    _html3 = _html3.replace(
+                        f"<th>{_c}</th>",
+                        f"<th style='color:#1b5e20 !important;background:#e8f5e9 !important;"
+                        f"font-weight:900 !important;'>{_c}</th>")
+                st.markdown(_html3, unsafe_allow_html=True)
+                st.caption("🟢 Cột chữ xanh lá = tiền nhà mạng **đã thực trả**, cộng dồn theo các trạm được tick ở bảng dưới.")
+
+            st.markdown("---")
+            out_rev = io.BytesIO()
+            with pd.ExcelWriter(out_rev, engine='openpyxl') as writer:
+                df_summ.to_excel(writer, index=False, sheet_name='Tong_Hop_Doanh_Thu')
+                for _dfp, _nm in [(df_viettel,'Viettel'), (df_vina,'Vina'), (df_mobi,'Mobi')]:
+                    if _dfp is not None and not _dfp.empty:
+                        _x = _dfp.drop(['__raw_payment__'], axis=1, errors='ignore').copy()
+                        _x.insert(0, "Trạng thái thu", [
+                            "✅ Đã thu" if str(v).strip() in _ticked.get(_nm, set()) else "⏳ Chưa thu"
+                            for v in _dfp["Mã trạm"].astype(str)])
+                        _x.to_excel(writer, index=False, sheet_name=_nm)
+
+            st.download_button(
+                label="🔽 TẢI XUỐNG FILE TỔNG HỢP DOANH THU (EXCEL)",
+                data=out_rev.getvalue(),
+                file_name=f"Bao_Cao_Doanh_Thu_Nha_Mang_{_mk3}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
 
     # ------------ TAB 4: BÁO CÁO LỢI NHUẬN CÔNG TY ------------
     with tab4:
