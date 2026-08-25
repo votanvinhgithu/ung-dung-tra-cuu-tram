@@ -2460,19 +2460,28 @@ if not df_source.empty:
                 .red-header-table-general td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
                 .red-header-table-general tr:nth-child(even) { background-color: #f9f9f9; }
                 .red-header-table-general tr:hover { background-color: #f1f1f1; }
+
+                /* Ô trạng thái TT — dùng CLASS vì Streamlit lọc mất style="" trên thẻ <td> */
+                .red-header-table-general td.tt-da,
+                table.red-header-table-general tbody tr td.tt-da {
+                    background-color: #d7f0dc !important; color: #1b5e20 !important;
+                    font-weight: 900 !important; white-space: nowrap !important;
+                }
+                .red-header-table-general td.tt-chua,
+                table.red-header-table-general tbody tr td.tt-chua {
+                    background-color: #ffe0b2 !important; color: #bf360c !important;
+                    font-weight: 900 !important; white-space: nowrap !important;
+                }
                 </style>
                 """, unsafe_allow_html=True)
-                
+
                 html_report_2 = df_clean_tab2.to_html(index=False, classes="red-header-table-general", escape=False)
-                # Tô màu ô trạng thái ngay trên HTML (DataFrame vẫn giữ chữ thuần
-                # để file Excel tải về không dính thẻ HTML).
-                html_report_2 = html_report_2.replace(
-                    "<td>✅ Đã TT</td>",
-                    "<td style='background:#e8f5e9;color:#1b5e20;font-weight:900;white-space:nowrap;'>✅ Đã TT</td>"
-                ).replace(
-                    "<td>⏳ Chưa TT</td>",
-                    "<td style='background:#fff3e0;color:#bf360c;font-weight:900;white-space:nowrap;'>⏳ Chưa TT</td>"
-                )
+                # Gắn class cho ô trạng thái (DataFrame vẫn giữ chữ thuần để file Excel
+                # tải về không dính thẻ HTML).
+                html_report_2 = re.sub(r"<td[^>]*>\s*✅ Đã TT\s*</td>",
+                                       '<td class="tt-da">✅ Đã TT</td>', html_report_2)
+                html_report_2 = re.sub(r"<td[^>]*>\s*⏳ Chưa TT\s*</td>",
+                                       '<td class="tt-chua">⏳ Chưa TT</td>', html_report_2)
                 st.markdown(html_report_2, unsafe_allow_html=True)
 
                 st.markdown("---")
@@ -2541,6 +2550,19 @@ if not df_source.empty:
             .red-header-table td { border: 1px solid #e0e0e0; padding: 8px; font-size: 14px; }
             .red-header-table tr:nth-child(even) { background-color: #f9f9f9; }
             .red-header-table tr:hover { background-color: #f1f1f1; }
+
+            /* Header các cột LŨY KẾ — chữ xanh lá đậm.
+               Phải dùng CLASS chứ không dùng style="" trực tiếp trên thẻ <th>:
+               Streamlit lọc bỏ thuộc tính style của <th> khi render bảng HTML,
+               nên cách cũ không ăn màu. Selector này có độ ưu tiên cao hơn
+               ".red-header-table th" nên chắc chắn đè được màu đỏ mặc định. */
+            .red-header-table th.lk-xanh,
+            table.red-header-table thead tr th.lk-xanh {
+                color: #1b5e20 !important;
+                background-color: #d7f0dc !important;
+                font-weight: 900 !important;
+                border-bottom: 3px solid #2e7d32 !important;
+            }
             </style>
             """, unsafe_allow_html=True)
 
@@ -2663,15 +2685,12 @@ if not df_source.empty:
                 })
                 df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
                 _html3 = df_summ.to_html(index=False, classes="red-header-table", escape=False)
-                # Header các cột lũy kế: chữ XANH LÁ ĐẬM cho dễ phân biệt với cột doanh thu.
-                # Dùng regex (không phải replace chuỗi cứng) để không lệ thuộc việc pandas
-                # có chèn thêm khoảng trắng hay thuộc tính vào thẻ <th> hay không.
-                _CSS_XANH = ("color:#1b5e20 !important;background:#e8f5e9 !important;"
-                             "font-weight:900 !important;border-bottom:3px solid #2e7d32 !important;")
+                # Gắn class "lk-xanh" cho header các cột lũy kế (màu định nghĩa ở khối CSS trên).
+                # Dùng class thay cho style="" vì Streamlit lọc mất style trên thẻ <th>.
                 for _c in COL_LK.values():
                     _html3 = re.sub(
                         r"<th[^>]*>\s*" + re.escape(_c) + r"\s*</th>",
-                        f"<th style=\"{_CSS_XANH}\">{_c}</th>",
+                        f'<th class="lk-xanh">{_c}</th>',
                         _html3)
                 st.markdown(_html3, unsafe_allow_html=True)
                 st.caption("🟢 Cột chữ xanh lá = tiền nhà mạng **đã thực trả**, cộng dồn theo các trạm được tick ở bảng dưới.")
