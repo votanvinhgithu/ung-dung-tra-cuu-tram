@@ -1090,6 +1090,63 @@ if "Ngày áp dụng giá mới" in DISPLAY_COLUMNS and "giá thuê chủ nhà_m
                            "Ngày áp dụng giá mới")
 
 
+def _months_between(d1: datetime, d2: datetime, max_months: int = 24):
+    """Danh sách 'MM/YYYY' phủ từ d1 đến d2 (gồm cả hai đầu). Chặn tối đa 24 tháng."""
+    out, m, y = [], d1.month, d1.year
+    while (y < d2.year) or (y == d2.year and m <= d2.month):
+        out.append(f"{m:02d}/{y}")
+        if len(out) >= max_months:
+            break
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return out
+
+
+def _load_due_in_range(f_source, d1: datetime, d2: datetime):
+    """
+    Gom các trạm ĐẾN HẠN thanh toán trong khoảng [d1, d2] — kể cả khi khoảng này
+    trải qua NHIỀU THÁNG (vd 25/08 → 15/09). Nạp từng tháng rồi lọc theo ngày
+    tới hạn thật, nên một trạm trả hàng tháng sẽ xuất hiện đúng số kỳ rơi vào khoảng.
+    """
+    khung = []
+    for ms in _months_between(d1, d2):
+        df = load_data_and_enrich_v3(f_source, ms)
+        if df is None or df.empty:
+            continue
+        d = df[df["__is_due_this_month__"] == True].copy()
+        if d.empty:
+            continue
+        _dt = pd.to_datetime(d["Ngày tới hạn TT trong tháng"], format='%m/%d/%Y', errors='coerce')
+        d = d[_dt.notna() & (_dt >= d1) & (_dt <= d2)]
+        if not d.empty:
+            khung.append(d)
+    if not khung:
+        return pd.DataFrame()
+    out = pd.concat(khung, ignore_index=True)
+    return out.sort_values(by="Ngày tới hạn TT trong tháng",
+                           key=lambda c: pd.to_datetime(c, format='%m/%d/%Y', errors='coerce'))
+
+
+def _trang_thai_tt_theo_dong(df, all_status):
+    """
+    Trạng thái đã/chưa TT của TỪNG DÒNG, tra theo đúng tháng của ngày tới hạn.
+    Bắt buộc phải tra theo tháng riêng từng dòng: ở chế độ khoảng ngày, các dòng
+    có thể thuộc nhiều tháng khác nhau, mỗi tháng lại lưu tick ở một khoá riêng.
+    """
+    cache = {}
+    def _tt(row):
+        d = _parse_any_date(row.get("Ngày tới hạn TT trong tháng", ""))
+        if d is None:
+            return "⏳ Chưa TT"
+        k = d.strftime("%m/%Y")
+        if k not in cache:
+            cache[k] = _paid_set_for(all_status, k)
+        ma = str(row.get("mã trạm", "")).strip()
+        return "✅ Đã TT" if ma in cache[k] else "⏳ Chưa TT"
+    return df.apply(_tt, axis=1)
+
+
 def _order_price_columns(df):
     """
     Sắp xếp lại thứ tự cột của bảng kết quả: giá cũ → giá mới → ngày áp dụng
@@ -2288,7 +2345,11 @@ if not df_source.empty:
     with tab2:
         st.markdown(f"### 💵 Quản Lý Phân Luồng Thanh Toán Chủ Nhà")
         with st.form(key='payment_form'):
-            st.info("Nhập tùy chọn tháng năm để truy vấn dòng tiền tương ứng. Nhấn nút TRA CỨU bên dưới để thực thi.")
+            st.info("**Hai cách tra cứu — chọn một:**\n"
+                    "- **Theo tháng:** điền ô Tháng/Năm bên dưới, để trống 2 ô ngày.\n"
+                    "- **Theo khoảng ngày bất kỳ:** điền CẢ HAI ô *Từ ngày* và *Đến ngày*. "
+                    "Khoảng ngày **không cần nằm trong cùng một tháng** (vd 08/25/2026 → 09/15/2026); "
+                    "khi đó ô Tháng/Năm được bỏ qua, có thể để trống.")
             # Chèn ô TEXT BOX chọn tháng trực tiếp vào Tab 2
             month_input_tab2 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=current_mm_yyyy)
             
@@ -2318,74 +2379,72 @@ if not df_source.empty:
             # thì app văng NameError thay vì báo lỗi cho người dùng.
             has_date_error_2 = False
             df_pay_display   = pd.DataFrame()
+            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
 
-            if not validate_month_year(month_input_tab2):
+            # ── Xác định CHẾ ĐỘ tra cứu ──────────────────────────────────────
+            v1_ok, e1 = validate_input_date(date_start_tab2)
+            v2_ok, e2 = validate_input_date(date_end_tab2)
+            _d1_t2 = _parse_any_date(date_start_tab2.strip()) if (v1_ok and date_start_tab2.strip()) else None
+            _d2_t2 = _parse_any_date(date_end_tab2.strip())   if (v2_ok and date_end_tab2.strip())   else None
+            # Điền CẢ HAI ô ngày → chế độ KHOẢNG NGÀY, được phép vắt qua nhiều tháng
+            _che_do_khoang_t2 = (_d1_t2 is not None and _d2_t2 is not None)
+            _nhan_ky_t2 = (f"{_d1_t2:%d/%m/%Y} → {_d2_t2:%d/%m/%Y}"
+                           if _che_do_khoang_t2 else f"tháng {month_input_tab2}")
+
+            if not v1_ok:
+                has_date_error_2 = True; display_error(e1)
+            elif not v2_ok:
+                has_date_error_2 = True; display_error(e2)
+            elif _che_do_khoang_t2 and _d2_t2 < _d1_t2:
                 has_date_error_2 = True
-                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả, xin cám ơn!")
+                display_error("'Đến ngày' phải bằng hoặc sau 'Từ ngày', vui lòng nhập lại!")
+            elif _che_do_khoang_t2 and len(_months_between(_d1_t2, _d2_t2)) >= 24:
+                has_date_error_2 = True
+                display_error("Khoảng ngày quá dài (tối đa 24 tháng), vui lòng thu hẹp lại!")
+            elif (not _che_do_khoang_t2) and (not validate_month_year(month_input_tab2)):
+                has_date_error_2 = True
+                display_error("Bạn đã nhập sai định dạng tháng/năm. Hoặc điền CẢ HAI ô "
+                              "'Từ ngày' và 'Đến ngày' để tra theo khoảng ngày bất kỳ.")
             else:
-                # Nhồi lại Data Engine đặc biệt theo Option Tháng vừa nhập!
-                f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
-                df_pay_source = load_data_and_enrich_v3(f_source, month_input_tab2)
-                df_pay_display = df_pay_source[df_pay_source["__is_due_this_month__"] == True].copy()
-                
+                if _che_do_khoang_t2:
+                    # Quét mọi tháng mà khoảng ngày đi qua rồi lọc theo ngày tới hạn thật
+                    df_pay_display = _load_due_in_range(f_source, _d1_t2, _d2_t2)
+                else:
+                    df_pay_source  = load_data_and_enrich_v3(f_source, month_input_tab2)
+                    df_pay_display = df_pay_source[df_pay_source["__is_due_this_month__"] == True].copy()
+                    # Chỉ điền một ô ngày → vẫn lọc trong phạm vi tháng như trước
+                    if _d1_t2 is not None or _d2_t2 is not None:
+                        _tmp = pd.to_datetime(df_pay_display['Ngày tới hạn TT trong tháng'],
+                                              format='%m/%d/%Y', errors='coerce')
+                        _msk = _tmp.notna()
+                        if _d1_t2 is not None: _msk &= (_tmp >= _d1_t2)
+                        if _d2_t2 is not None: _msk &= (_tmp <= _d2_t2)
+                        df_pay_display = df_pay_display[_msk]
+
                 # Lọc theo trạm cụ thể nếu người dùng có gõ
-                if search_tab2.strip():
+                if not df_pay_display.empty and search_tab2.strip():
                     target_stations_2 = [s.strip().lower() for s in search_tab2.replace(',', '\n').split('\n') if s.strip()]
                     if target_stations_2:
                         mask2 = df_pay_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations_2)
                         df_pay_display = df_pay_display[mask2]
-                        
-                # Lọc đếm ngược Tới Mốc Khoảng Ngày (Phục vụ Chốt Quỹ Giải Ngân Kế Toán)
-                has_date_error_2 = False
-                v1_ok, e1 = validate_input_date(date_start_tab2)
-                v2_ok, e2 = validate_input_date(date_end_tab2)
-                
-                if not v1_ok:
-                    has_date_error_2 = True
-                    display_error(e1)
-                elif not v2_ok:
-                    has_date_error_2 = True
-                    display_error(e2)
-                elif date_start_tab2.strip() or date_end_tab2.strip():
-                    try:
-                        temp_dt = pd.to_datetime(df_pay_display['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
-                        mask_date = pd.Series([True] * len(df_pay_display), index=df_pay_display.index)
-                        
-                        if date_start_tab2.strip():
-                            start_dt = pd.to_datetime(date_start_tab2.strip(), format='%m/%d/%Y')
-                            mask_date &= (temp_dt >= start_dt)
-                            
-                        if date_end_tab2.strip():
-                            end_dt = pd.to_datetime(date_end_tab2.strip(), format='%m/%d/%Y')
-                            mask_date &= (temp_dt <= end_dt)
-                            
-                        mask_date &= temp_dt.notna()
-                        df_pay_display = df_pay_display[mask_date]
-                    except Exception:
-                        has_date_error_2 = True
-                        display_error("Lỗi định dạng hệ thống khi xử lý ngày tháng!")
 
                 # ─────────────────────────────────────────────────────────────
-                # TRẠNG THÁI THANH TOÁN
-                # Đọc đúng nguồn dữ liệu mà kế toán tick ở Tab 5 (GitHub Gist),
-                # để Tab 2 không còn liệt kê trạm đã trả tiền như thể chưa trả.
+                # TRẠNG THÁI THANH TOÁN — tra theo ĐÚNG THÁNG của từng dòng,
+                # vì ở chế độ khoảng ngày các dòng có thể thuộc nhiều tháng khác nhau.
                 # ─────────────────────────────────────────────────────────────
-                _paid_t2 = _paid_set_for(load_payment_status(), month_input_tab2)
-                df_pay_display["Trạng thái TT"] = (
-                    df_pay_display["mã trạm"].astype(str).str.strip()
-                    .apply(lambda m: "✅ Đã TT" if m in _paid_t2 else "⏳ Chưa TT")
-                )
+                if not df_pay_display.empty:
+                    df_pay_display["Trạng thái TT"] = _trang_thai_tt_theo_dong(
+                        df_pay_display, load_payment_status())
 
-                # Áp dụng bộ lọc trạng thái do người dùng chọn trong form
-                if "CHƯA" in status_filter_tab2:
-                    df_pay_display = df_pay_display[df_pay_display["Trạng thái TT"] == "⏳ Chưa TT"]
-                elif "ĐÃ" in status_filter_tab2:
-                    df_pay_display = df_pay_display[df_pay_display["Trạng thái TT"] == "✅ Đã TT"]
+                    if "CHƯA" in status_filter_tab2:
+                        df_pay_display = df_pay_display[df_pay_display["Trạng thái TT"] == "⏳ Chưa TT"]
+                    elif "ĐÃ" in status_filter_tab2:
+                        df_pay_display = df_pay_display[df_pay_display["Trạng thái TT"] == "✅ Đã TT"]
 
             if has_date_error_2:
                 pass
             elif df_pay_display.empty:
-                st.warning(f"❌ Rất tiếc, Không tìm thấy Trạm nào cần giải ngân thỏa mãn các lớp điều kiện trong tháng {month_input_tab2}.")
+                st.warning(f"❌ Rất tiếc, Không tìm thấy Trạm nào cần giải ngân thỏa mãn các lớp điều kiện trong {_nhan_ky_t2}.")
             else:
                 # SẮP XẾP TỪ NGÀY ĐẦU THÁNG ĐẾN CUỐI THÁNG CHUẨN XÁC
                 df_pay_display = df_pay_display.sort_values(
@@ -2406,7 +2465,11 @@ if not df_source.empty:
                 _amt_unpaid_t2 = df_pay_display.loc[~_mask_paid_t2, "__raw_amount__"].sum()
 
                 st.snow()
-                if date_start_tab2.strip() or date_end_tab2.strip():
+                if _che_do_khoang_t2:
+                    _sotg = len(_months_between(_d1_t2, _d2_t2))
+                    st.success(f"🔥 **BÁO CÁO GIẢI NGÂN THEO KHOẢNG NGÀY: {_nhan_ky_t2}** "
+                               f"— quét {_sotg} tháng, gom mọi kỳ tới hạn nằm trong khoảng này.")
+                elif date_start_tab2.strip() or date_end_tab2.strip():
                     msg_start = date_start_tab2.strip() if date_start_tab2.strip() else "Đầu tháng"
                     msg_end = date_end_tab2.strip() if date_end_tab2.strip() else "Cuối tháng"
                     st.success(f"🔥 **BÁO CÁO GIẢI NGÂN GẤP (CHỈ TÍNH CÁC HĐ TỪ {msg_start} ĐẾN {msg_end} CỦA THÁNG {month_input_tab2}):**")
@@ -2499,7 +2562,9 @@ if not df_source.empty:
                 st.download_button(
                     label="🔽 NHẤN TẢI XUỐNG BÁO CÁO (EXCEL)",
                     data=excel_data2,
-                    file_name=f"Bao_Cao_Thanh_Toan_{month_input_tab2.replace('/','_')}.xlsx",
+                    file_name=(f"Bao_Cao_Thanh_Toan_{_d1_t2:%d%m%Y}_den_{_d2_t2:%d%m%Y}.xlsx"
+                               if _che_do_khoang_t2
+                               else f"Bao_Cao_Thanh_Toan_{month_input_tab2.replace('/','_')}.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
@@ -2845,7 +2910,11 @@ if not df_source.empty:
 
         # --- FORM TRA CỨU ---
         with st.form(key='subject_form'):
-            st.info("💡 Tra cứu theo định dạng Tháng/Năm (MM/YYYY) để kết xuất Cú pháp Content cho Ngân hàng.")
+            st.info("💡 **Hai cách tra cứu — chọn một:**\n"
+                    "- **Theo tháng:** điền ô Tháng/Năm, để trống 2 ô ngày.\n"
+                    "- **Theo khoảng ngày bất kỳ:** điền CẢ HAI ô *Từ ngày* và *Đến ngày*, "
+                    "**không cần cùng một tháng** (vd 08/25/2026 → 09/15/2026). "
+                    "Ô tick vẫn lưu đúng theo tháng của từng kỳ.")
             month_input_tab5 = st.text_input("📅 Nhập định dạng Tháng/Năm Tra Cứu (MM/YYYY):", value=_today().strftime('%m/%Y'))
             c1, c2 = st.columns(2)
             with c1:
@@ -2856,40 +2925,51 @@ if not df_source.empty:
 
         # --- XỬ LÝ KHI SUBMIT FORM (lưu kết quả vào session_state để persist qua rerun) ---
         if submit_subject:
-            if not validate_month_year(month_input_tab5):
-                display_error("Bạn đã nhập sai định dạng tháng/năm, vui lòng nhập đúng để hệ thống hiển thị kết quả!")
+            f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
+            _err5 = False
+            _df_due5 = pd.DataFrame()
+
+            _v1, _e1 = validate_input_date(date_start_tab5)
+            _v2, _e2 = validate_input_date(date_end_tab5)
+            _d1_t5 = _parse_any_date(date_start_tab5.strip()) if (_v1 and date_start_tab5.strip()) else None
+            _d2_t5 = _parse_any_date(date_end_tab5.strip())   if (_v2 and date_end_tab5.strip())   else None
+            _khoang5 = (_d1_t5 is not None and _d2_t5 is not None)
+            _nhan5   = (f"{_d1_t5:%d/%m/%Y} → {_d2_t5:%d/%m/%Y}" if _khoang5
+                        else f"tháng {month_input_tab5}")
+
+            if not _v1:
+                _err5 = True; display_error(_e1)
+            elif not _v2:
+                _err5 = True; display_error(_e2)
+            elif _khoang5 and _d2_t5 < _d1_t5:
+                _err5 = True; display_error("'Đến ngày' phải bằng hoặc sau 'Từ ngày', vui lòng nhập lại!")
+            elif _khoang5 and len(_months_between(_d1_t5, _d2_t5)) >= 24:
+                _err5 = True; display_error("Khoảng ngày quá dài (tối đa 24 tháng), vui lòng thu hẹp lại!")
+            elif (not _khoang5) and (not validate_month_year(month_input_tab5)):
+                _err5 = True
+                display_error("Bạn đã nhập sai định dạng tháng/năm. Hoặc điền CẢ HAI ô "
+                              "'Từ ngày' và 'Đến ngày' để tra theo khoảng ngày bất kỳ!")
+            elif f_source is None:
+                _err5 = True; st.warning("⚠️ Không tìm thấy File dữ liệu để phân tích!")
             else:
-                f_source = DEFAULT_FILE if DEFAULT_FILE else uploaded_file
-                if f_source is None:
-                    st.warning("⚠️ Không tìm thấy File dữ liệu để phân tích!")
-                else:
-                    with st.spinner(f"Đang trích xuất danh sách chuyển khoản tháng {month_input_tab5}..."):
+                with st.spinner(f"Đang trích xuất danh sách chuyển khoản {_nhan5}..."):
+                    if _khoang5:
+                        _df_due5 = _load_due_in_range(f_source, _d1_t5, _d2_t5)
+                    else:
                         _df_src5 = load_data_and_enrich_v3(f_source, month_input_tab5)
                         _df_due5 = _df_src5[_df_src5["__is_due_this_month__"] == True].copy()
-
-                    _err5 = False
-                    _v1, _e1 = validate_input_date(date_start_tab5)
-                    _v2, _e2 = validate_input_date(date_end_tab5)
-                    if not _v1:
-                        _err5 = True; display_error(_e1)
-                    elif not _v2:
-                        _err5 = True; display_error(_e2)
-                    elif date_start_tab5.strip() or date_end_tab5.strip():
-                        try:
-                            _tmp_dt = pd.to_datetime(_df_due5['Ngày tới hạn TT trong tháng'], format='%m/%d/%Y', errors='coerce')
-                            _msk = pd.Series([True] * len(_df_due5), index=_df_due5.index)
-                            if date_start_tab5.strip():
-                                _msk &= (_tmp_dt >= pd.to_datetime(date_start_tab5.strip(), format='%m/%d/%Y'))
-                            if date_end_tab5.strip():
-                                _msk &= (_tmp_dt <= pd.to_datetime(date_end_tab5.strip(), format='%m/%d/%Y'))
-                            _msk &= _tmp_dt.notna()
+                        if _d1_t5 is not None or _d2_t5 is not None:
+                            _tmp_dt = pd.to_datetime(_df_due5['Ngày tới hạn TT trong tháng'],
+                                                     format='%m/%d/%Y', errors='coerce')
+                            _msk = _tmp_dt.notna()
+                            if _d1_t5 is not None: _msk &= (_tmp_dt >= _d1_t5)
+                            if _d2_t5 is not None: _msk &= (_tmp_dt <= _d2_t5)
                             _df_due5 = _df_due5[_msk]
-                        except Exception:
-                            _err5 = True; display_error("Lỗi định dạng ngày tháng!")
 
-                    if not _err5 and _df_due5.empty:
-                        st.warning(f"❌ Không tìm thấy hợp đồng nào cần thanh toán trong tháng {month_input_tab5}.")
-                    elif not _err5:
+            if True:
+                if not _err5 and _df_due5.empty:
+                    st.warning(f"❌ Không tìm thấy hợp đồng nào cần thanh toán trong {_nhan5}.")
+                elif not _err5:
                         _df_due5 = _df_due5.sort_values(
                             by="Ngày tới hạn TT trong tháng",
                             key=lambda col: pd.to_datetime(col, format='%m/%d/%Y', errors='coerce')
@@ -2934,11 +3014,17 @@ if not df_source.empty:
 
                         # Lưu vào session_state để persist qua mọi rerun
                         st.session_state['t5_df_clean']   = _df_clean5
-                        st.session_state['t5_df_amounts'] = _df_due5[["mã trạm","__raw_amount__"]].copy()
+                        # Kèm ngày tới hạn để phân biệt được nhiều kỳ của cùng một trạm
+                        st.session_state['t5_df_amounts'] = _df_due5[
+                            ["mã trạm", "Ngày tới hạn TT trong tháng", "__raw_amount__"]].copy()
                         st.session_state['t5_df_due_full'] = _df_due5.copy()  # lưu full để check overrun
-                        st.session_state['t5_month']      = month_input_tab5
-                        # Khoá lưu luôn dạng MM_YYYY có số 0 đầu — khớp với banner cảnh báo trễ TT
-                        st.session_state['t5_safe_time']  = _month_key(month_input_tab5)
+                        st.session_state['t5_month']      = _nhan5
+                        # Khoá dùng cho các widget trong phiên. Ở chế độ khoảng ngày
+                        # KHÔNG có tháng duy nhất, nên đây chỉ là khoá giao diện —
+                        # nơi LƯU tick vẫn tách theo tháng của từng kỳ (xem phần lưu bên dưới).
+                        st.session_state['t5_safe_time']  = (f"{_d1_t5:%d%m%Y}_{_d2_t5:%d%m%Y}"
+                                                             if _khoang5 else _month_key(month_input_tab5))
+                        st.session_state['t5_khoang']     = _khoang5
                         st.session_state['t5_total']      = len(_df_clean5)
                         st.session_state['t5_total_amt']  = _df_due5["__raw_amount__"].sum()
 
@@ -3023,16 +3109,33 @@ if not df_source.empty:
                     "Vui lòng khai báo GIST_TOKEN và GIST_ID trong phần Secrets trước khi dùng."
                 )
 
-            # Đọc từ nơi lưu bền vững (dùng khoá đã chuẩn hoá) + nạp nhật ký thao tác
+            # Đọc từ nơi lưu bền vững + nạp nhật ký thao tác.
+            # Ở chế độ khoảng ngày, mỗi dòng có thể thuộc một tháng khác nhau nên
+            # trạng thái tick phải tra theo THÁNG CỦA NGÀY TỚI HẠN của chính dòng đó.
             _all_status = load_payment_status()
-            if _sess_key not in st.session_state:
-                st.session_state[_sess_key] = _paid_set_for(_all_status, _stime)
 
-            _paid_set  = st.session_state[_sess_key]
-            _audit_map = _audit_lookup(_all_status, _stime)   # {mã trạm: (ai, lúc nào)}
+            def _thang_cua(_r):
+                """Khoá tháng (MM_YYYY) của một dòng, lấy từ ngày tới hạn TT."""
+                _d = _parse_any_date(_r.get("Ngày tới hạn TT trong tháng", ""))
+                return _month_key(_d.strftime("%m/%Y")) if _d else _stime
+
+            # {khoá tháng: tập mã trạm đã TT} — dùng chung cho hiển thị và cho lúc lưu
+            _thang_trong_ds = sorted({_thang_cua(_r) for _, _r in _dc.iterrows()})
+            if _sess_key not in st.session_state:
+                st.session_state[_sess_key] = {
+                    _k: _paid_set_for(_all_status, _k) for _k in _thang_trong_ds
+                }
+            _paid_by_month = st.session_state[_sess_key]
+            for _k in _thang_trong_ds:                     # phòng khi thiếu tháng nào
+                _paid_by_month.setdefault(_k, _paid_set_for(_all_status, _k))
+
+            _audit_map = {}
+            for _k in _thang_trong_ds:
+                _audit_map.update(_audit_lookup(_all_status, _k))   # {mã trạm: (ai, lúc nào)}
 
             # Progress bar
-            _n_paid = len([m for m in _dc["mã trạm"].astype(str).str.strip() if m in _paid_set])
+            _n_paid = sum(1 for _, _r in _dc.iterrows()
+                          if str(_r.get("mã trạm", "")).strip() in _paid_by_month.get(_thang_cua(_r), set()))
             _pct = _n_paid / _tot if _tot > 0 else 0
             st.markdown(f"""
             <div style="margin:8px 0;">
@@ -3058,7 +3161,7 @@ if not df_source.empty:
             _tracker_rows = []
             for _, _r in _dc.iterrows():
                 _ma = str(_r.get("mã trạm", "")).strip()
-                _row_data = {"✅ Đã TT": _ma in _paid_set}
+                _row_data = {"✅ Đã TT": _ma in _paid_by_month.get(_thang_cua(_r), set())}
                 for _src_col, _dst_col in _tracker_cols_map.items():
                     _row_data[_dst_col] = _r.get(_src_col, "-") if _src_col in _dc.columns else "-"
                 # Nhật ký: ai đánh dấu đã TT và lúc nào ("-" với dữ liệu lưu trước đây)
@@ -3100,57 +3203,72 @@ if not df_source.empty:
                 )
 
                 if _btn_save:
-                    _new_paid = set()
-                    for _, _er in _edited.iterrows():
+                    # Gom tick theo ĐÚNG THÁNG của từng dòng. Bắt buộc phải tách như vậy:
+                    # ở chế độ khoảng ngày, danh sách có thể trải nhiều tháng mà mỗi
+                    # tháng lại lưu ở một khoá riêng trong Gist.
+                    _tick_theo_thang    = {}   # {khoá tháng: tick đang bật}
+                    _hienthi_theo_thang = {}   # {khoá tháng: mã trạm đang hiển thị}
+                    for _i_row, (_, _er) in enumerate(_edited.iterrows()):
+                        _ma_r = str(_er["Mã trạm"]).strip()
+                        _d_r  = _parse_any_date(_er.get("Ngày TT", ""))
+                        _k_r  = _month_key(_d_r.strftime("%m/%Y")) if _d_r else _stime
+                        _hienthi_theo_thang.setdefault(_k_r, set()).add(_ma_r)
                         if _er.get("✅ Đã TT", False):
-                            _new_paid.add(str(_er["Mã trạm"]).strip())
+                            _tick_theo_thang.setdefault(_k_r, set()).add(_ma_r)
 
-                    # Bỏ cache 30s để đọc bản MỚI NHẤT trên Gist ngay trước khi gộp.
-                    # Nếu đọc bản cache cũ, tick mà kế toán khác vừa lưu trong 30 giây
+                    # Bỏ cache để đọc bản MỚI NHẤT trên Gist ngay trước khi gộp.
+                    # Nếu đọc bản cache cũ, tick mà kế toán khác vừa lưu ít phút
                     # trước sẽ bị ghi đè mất → trạm đã trả tiền quay lại trạng thái chưa TT.
                     try:
                         _fetch_gist_content.clear()
                     except Exception:
                         pass
 
-                    # --- Giữ lại các trạm đã tick trước đó nhưng KHÔNG nằm trong
-                    # danh sách đang hiển thị (do filter ngày/trạm).
-                    # Nếu không merge, nhấn Lưu sẽ xoá hết tick của trạm ngoài filter.
-                    _visible_stations  = set(_dc["mã trạm"].astype(str).str.strip())
-                    _all_st            = load_payment_status()
-                    _prev_paid_all     = _paid_set_for(_all_st, _stime)
-                    _prev_paid_outside = _prev_paid_all - _visible_stations
-                    _new_paid          = _new_paid | _prev_paid_outside
+                    _all_st = load_payment_status()
+                    _added_t5, _removed_t5 = set(), set()
+                    _ket_qua_theo_thang = {}
 
-                    # Dọn các khoá cũ chưa chuẩn hoá của cùng tháng (vd '8_2026'),
-                    # gộp hết về một khoá duy nhất để không còn nguồn dữ liệu thứ hai.
-                    for _k in [k for k in list(_all_st.keys())
-                               if k != _stime and _month_key(k) == _stime]:
-                        _all_st.pop(_k, None)
+                    for _k_r in sorted(_hienthi_theo_thang.keys()):
+                        _visible_k = _hienthi_theo_thang[_k_r]
+                        _tick_k    = _tick_theo_thang.get(_k_r, set())
+                        _prev_k    = _paid_set_for(_all_st, _k_r)
+                        # Giữ trạm đã tick trước đó nhưng đang bị ẩn (ngoài bộ lọc),
+                        # nếu không nhấn Lưu sẽ xoá sạch tick của những trạm đó.
+                        _moi_k     = _tick_k | (_prev_k - _visible_k)
 
-                    # --- Ghi nhật ký: ai vừa tick / bỏ tick trạm nào, lúc nào ---
-                    _added_t5   = _new_paid - _prev_paid_all
-                    _removed_t5 = _prev_paid_all - _new_paid
+                        _added_t5   |= {f"{m} ({_k_r})" for m in (_moi_k - _prev_k)}
+                        _removed_t5 |= {f"{m} ({_k_r})" for m in (_prev_k - _moi_k)}
+
+                        # Dọn khoá cũ chưa chuẩn hoá của cùng tháng (vd '8_2026')
+                        for _k_old in [k for k in list(_all_st.keys())
+                                       if k != _k_r and _month_key(k) == _k_r]:
+                            _all_st.pop(_k_old, None)
+
+                        _all_st[_k_r] = sorted(_moi_k)
+                        _ket_qua_theo_thang[_k_r] = _moi_k
+
                     if _added_t5 or _removed_t5:
                         _all_st = _append_audit(_all_st, _stime, _added_t5, _removed_t5)
 
-                    _all_st[_stime] = sorted(_new_paid)
                     _ok = save_payment_status(_all_st)
 
                     if _ok:
                         # CHỈ cập nhật giao diện khi đã ghi thành công. Nếu ghi hỏng mà vẫn
                         # cập nhật, màn hình hiện "đã tick" trong khi Gist chưa có gì —
                         # hết phiên là mất sạch, dẫn tới thanh toán lại lần nữa.
-                        st.session_state[_sess_key] = _new_paid
+                        st.session_state[_sess_key] = _ket_qua_theo_thang
                         st.session_state[_ctr_key] += 1
+                        _tong_moi = sum(len(v) for v in _ket_qua_theo_thang.values())
                         _chi_tiet = []
                         if _added_t5:
                             _chi_tiet.append(f"đánh dấu ĐÃ TT thêm {len(_added_t5)} trạm ({', '.join(sorted(_added_t5)[:5])}{'...' if len(_added_t5) > 5 else ''})")
                         if _removed_t5:
                             _chi_tiet.append(f"**bỏ tick {len(_removed_t5)} trạm** ({', '.join(sorted(_removed_t5)[:5])}{'...' if len(_removed_t5) > 5 else ''})")
+                        _ds_thang = ", ".join(k.replace("_", "/") for k in sorted(_ket_qua_theo_thang))
                         st.session_state[_msg_key] = (
                             "ok",
-                            f"✅ Đã lưu bền vững! Tổng {len(_new_paid)} trạm đã thanh toán tháng {_mon}. "
+                            f"✅ Đã lưu bền vững! Tổng {_tong_moi} trạm đã thanh toán "
+                            f"(các tháng: {_ds_thang}). "
                             + (("Lần này: " + "; ".join(_chi_tiet) + ". ") if _chi_tiet else "Không có thay đổi nào. ")
                             + f"Ghi nhận bởi **{_current_user()}**. Trạng thái giữ nguyên kể cả khi app khởi động lại."
                         )
@@ -3178,18 +3296,30 @@ if not df_source.empty:
                 _edited = _df_tracker.copy()
 
             # ---- Tổng kết: tính từ data_editor đang hiển thị ----
+            # Khoá theo (mã trạm + ngày tới hạn) chứ KHÔNG chỉ mã trạm: ở chế độ
+            # khoảng ngày, một trạm trả hàng tháng xuất hiện nhiều kỳ, mỗi kỳ tick riêng.
+            def _khoa_ky(_ma, _ngay):
+                return f"{str(_ma).strip()}|{str(_ngay).strip()}"
+
             _paid_in_ui = set()
             for _, _er in _edited.iterrows():
                 if _er.get("✅ Đã TT", False):
-                    _paid_in_ui.add(str(_er["Mã trạm"]).strip())
+                    _paid_in_ui.add(_khoa_ky(_er["Mã trạm"], _er.get("Ngày TT", "")))
 
-            _cnt_paid   = len(_paid_in_ui)
+            _dc_key = _dc.apply(
+                lambda r: _khoa_ky(r.get("mã trạm", ""), r.get("Ngày tới hạn TT trong tháng", "")),
+                axis=1)
+            _mask_paid_ui = _dc_key.isin(_paid_in_ui)
+
+            _cnt_paid   = int(_mask_paid_ui.sum())
             _cnt_unpaid = _tot - _cnt_paid
 
             _damt2 = _damt.copy()
-            _damt2["mã trạm"] = _damt2["mã trạm"].astype(str).str.strip()
-            _paid_amt   = _damt2[_damt2["mã trạm"].isin(_paid_in_ui)]["__raw_amount__"].sum()
-            _unpaid_amt = _damt2[~_damt2["mã trạm"].isin(_paid_in_ui)]["__raw_amount__"].sum()
+            _damt2["__key__"] = _damt2.apply(
+                lambda r: _khoa_ky(r.get("mã trạm", ""), r.get("Ngày tới hạn TT trong tháng", "")),
+                axis=1)
+            _paid_amt   = _damt2[_damt2["__key__"].isin(_paid_in_ui)]["__raw_amount__"].sum()
+            _unpaid_amt = _damt2[~_damt2["__key__"].isin(_paid_in_ui)]["__raw_amount__"].sum()
 
             st.markdown("---")
             _mc1,_mc2,_mc3,_mc4 = st.columns(4)
@@ -3214,7 +3344,7 @@ if not df_source.empty:
             </style>""", unsafe_allow_html=True)
 
             # Bảng XANH - đã thanh toán
-            _df_paid_show = _dc[_dc["mã trạm"].astype(str).str.strip().isin(_paid_in_ui)].copy()
+            _df_paid_show = _dc[_mask_paid_ui].copy()
             if not _df_paid_show.empty:
                 _df_paid_show.reset_index(drop=True, inplace=True)
                 _df_paid_show.insert(0,"STT", range(1, len(_df_paid_show)+1))
@@ -3224,7 +3354,7 @@ if not df_source.empty:
                 st.info("📋 Chưa có trạm nào được đánh dấu đã thanh toán. Tick ô ✅ Đã TT rồi nhấn Lưu.")
 
             # Bảng CAM - chưa thanh toán
-            _df_unpaid_show = _dc[~_dc["mã trạm"].astype(str).str.strip().isin(_paid_in_ui)].copy()
+            _df_unpaid_show = _dc[~_mask_paid_ui].copy()
             if not _df_unpaid_show.empty:
                 _df_unpaid_show.reset_index(drop=True, inplace=True)
                 _df_unpaid_show.insert(0,"STT", range(1, len(_df_unpaid_show)+1))
@@ -3265,9 +3395,7 @@ if not df_source.empty:
             # ---- Tải Excel đầy đủ (3 sheet) ----
             st.markdown("---")
             _df_export = _dc.copy()
-            _df_export["Trạng thái TT"] = _df_export["mã trạm"].astype(str).str.strip().apply(
-                lambda m: "✅ Đã TT" if m in _paid_in_ui else "⏳ Chưa TT"
-            )
+            _df_export["Trạng thái TT"] = ["✅ Đã TT" if v else "⏳ Chưa TT" for v in _mask_paid_ui]
             _df_export.insert(0,"STT", range(1, len(_df_export)+1))
             _out5 = io.BytesIO()
             with pd.ExcelWriter(_out5, engine='openpyxl') as _wr:
