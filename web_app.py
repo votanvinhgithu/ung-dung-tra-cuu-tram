@@ -1565,6 +1565,77 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
     return df_res
 
 # --- HÀM XỬ LÝ DOANH THU NHÀ MẠNG (TAB 3) ---
+
+# Một ô được coi là TIỀN khi là số dương, hoặc là chuỗi chỉ gồm chữ số và dấu
+# phân cách nghìn ("6.500.000", "6,500,000"). Ngày tháng và ghi chú chữ bị loại.
+_RE_CHUOI_TIEN = re.compile(r'^\d[\d.,\s]*$')
+
+
+def _la_o_tien(v):
+    if pd.isna(v):
+        return False
+    if isinstance(v, (pd.Timestamp, datetime)):
+        return False
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, (int, float)):
+        return v > 0
+    return bool(_RE_CHUOI_TIEN.match(str(v).strip()))
+
+
+def _khong_phai_cot_ngay(c):
+    """
+    Loại các cột CHẮC CHẮN không phải mốc thanh toán ra khỏi vùng quét ngày.
+    Quan trọng:
+      - Cột 'Ký ngày' chứa chuỗi kiểu '01/09/2022' sẽ bị pd.to_datetime hiểu
+        thành một kỳ thanh toán, làm trạm hiện nhầm ở tháng không đến hạn.
+      - Cột KHÔNG TÊN (Unnamed) ở cuối sheet Mobi là ghi chú, trong đó ô
+        '14/09/2026' cũng parse ra ngày → trùng với 'Kỳ n+2' và bị cộng doanh
+        thu 2 lần ở báo cáo TAB 4. Kỳ thanh toán thật luôn có tiêu đề ('Kỳ n+x').
+    """
+    cl = str(c).strip().lower()
+    return (cl.startswith("mã") or cl.startswith("stt") or cl.startswith("unnamed")
+            or "tên trạm" in cl or "ghi chú" in cl or "note" in cl
+            or "chu kỳ" in cl or "ký ngày" in cl or "ngày ký" in cl
+            or "loại" in cl)
+
+
+def _pick_payment_col(df):
+    """
+    Chọn cột 'Số tiền nhà mạng trả theo kỳ' — là cột CUỐI CÙNG THỰC SỰ CHỨA TIỀN.
+
+    Vì sao không lấy thẳng cột cuối cùng: sheet 'Trạm Mobi thanh toán' có thêm 2
+    cột không tên ở cuối — 'Unnamed: 25' là khoảng thời gian ('01/09/2026 -
+    28/02/2027') và 'Unnamed: 26' là ghi chú ('chưa nhận tiền'). Lấy cột cuối sẽ
+    ra chữ → parse thành 0 → cột 'Số tiền Mobi thanh toán' hiện toàn dấu '-' và
+    doanh thu Mobi bằng 0. Sheet Viettel/Vina không có 2 cột này nên kết quả giữ
+    nguyên như cũ.
+    """
+    valid_cols = [c for c in df.columns
+                  if "ghi chú" not in str(c).lower() and "note" not in str(c).lower()]
+    filtered = []
+    for c in valid_cols:
+        if str(c).lower().startswith("unnamed"):
+            # Giữ lại Unnamed nếu có chứa dữ liệu thực sự
+            if not df[c].replace('', pd.NA).dropna().empty:
+                filtered.append(c)
+        else:
+            filtered.append(c)
+    if not filtered:
+        return df.columns[-1]
+
+    # Duyệt ngược từ cuối: cột tiền đầu tiên gặp được chính là cột cần lấy.
+    for c in reversed(filtered):
+        vals = df[c].replace('', pd.NA).dropna()
+        if vals.empty:
+            continue
+        n_tien = sum(1 for v in vals if _la_o_tien(v))
+        if n_tien and n_tien >= len(vals) * 0.5:
+            return c
+
+    return filtered[-1]
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _read_provider_sheets(file_source, version):
     """Đọc 3 sheet nhà mạng MỘT LẦN rồi dùng lại cho mọi tháng."""
@@ -1610,17 +1681,8 @@ def _load_revenue_cached(file_source, target_month_str, version):
                 if "mã trạm" in str(c).lower() or "mã" in str(c).lower():
                     ma_col = c; break
                     
-            # 1. TÌM CỘT CUỐI CÙNG (bỏ qua Ghi chú và các cột Unnamed trống)
-            valid_cols_for_last = [c for c in df.columns if "ghi chú" not in str(c).lower() and "note" not in str(c).lower()]
-            filtered_cols = []
-            for c in valid_cols_for_last:
-                if str(c).lower().startswith("unnamed"):
-                    # Giữ lại Unnamed nếu có chứa dữ liệu thực sự
-                    if not df[c].replace('', pd.NA).dropna().empty:
-                        filtered_cols.append(c)
-                else:
-                    filtered_cols.append(c)
-            last_col_idx = filtered_cols[-1] if filtered_cols else df.columns[-1]
+            # 1. TÌM CỘT TIỀN THANH TOÁN THEO KỲ (cột cuối cùng thực sự chứa tiền)
+            last_col_idx = _pick_payment_col(df)
 
             # 2. TÌM CỘT TRẢ/THÁNG (Giá thuê) BẰNG TỪ KHÓA ƯU TIÊN
             monthly_col = None
@@ -1638,18 +1700,6 @@ def _load_revenue_cached(file_source, target_month_str, version):
             # Cột mã riêng của nhà mạng: "Mã Vina" / "Mã Mobi" (Viettel không có cột này)
             code_col = next((c for c in df.columns
                              if str(c).strip().lower() == f"mã {provider_keyword.lower()}"), None)
-
-            def _khong_phai_cot_ngay(c):
-                """
-                Loại các cột CHẮC CHẮN không phải mốc thanh toán ra khỏi vùng quét ngày.
-                Quan trọng: cột 'Ký ngày' chứa chuỗi kiểu '01/09/2022' sẽ bị pd.to_datetime
-                hiểu thành một kỳ thanh toán, làm trạm hiện nhầm ở tháng không đến hạn.
-                """
-                cl = str(c).strip().lower()
-                return (cl.startswith("mã") or cl.startswith("stt")
-                        or "tên trạm" in cl or "ghi chú" in cl or "note" in cl
-                        or "chu kỳ" in cl or "ký ngày" in cl or "ngày ký" in cl
-                        or "loại" in cl)
 
             date_cols = [c for c in df.columns
                          if c not in (ma_col, monthly_col, last_col_idx, code_col)
@@ -1798,14 +1848,7 @@ def get_profit_report_data(file_source, time_input_str, df_source):
         if df.empty: return monthly_sums
         
         ma_col = df.columns[0]
-        valid_cols = [c for c in df.columns if "ghi chú" not in str(c).lower() and "note" not in str(c).lower()]
-        filtered = []
-        for c in valid_cols:
-            if str(c).lower().startswith("unnamed"):
-                if not df[c].replace('', pd.NA).dropna().empty: filtered.append(c)
-            else:
-                filtered.append(c)
-        last_col = filtered[-1] if filtered else df.columns[-1]
+        last_col = _pick_payment_col(df)
 
         m_col = None
         kw_list = ["trả/tháng", "thuê/tháng", "giá thuê", "đơn giá", "mức cước", "số tiền", "cước", "giá"]
@@ -1816,9 +1859,11 @@ def get_profit_report_data(file_source, time_input_str, df_source):
                     m_col = c; break
             if m_col: break
         if not m_col: m_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
-        
-        date_cols = [c for c in df.columns if c != ma_col and c != m_col and c != last_col]
-        
+
+        date_cols = [c for c in df.columns
+                     if c != ma_col and c != m_col and c != last_col
+                     and not _khong_phai_cot_ngay(c)]
+
         def parse_num(val):
             if pd.isna(val): return 0.0
             if isinstance(val, (int, float)): return float(val)
@@ -1826,11 +1871,11 @@ def get_profit_report_data(file_source, time_input_str, df_source):
             if s.endswith('.0'): s = s[:-2]
             digits = re.sub(r'\D', '', s)
             return float(digits) if digits else 0.0
-            
+
         for _, row in df.iterrows():
             payment_val = parse_num(row[last_col])
             if payment_val == 0: continue
-            
+
             dates = []
             for c in date_cols:
                 val = row[c]
@@ -1839,12 +1884,15 @@ def get_profit_report_data(file_source, time_input_str, df_source):
                     else:
                         try: dates.append(pd.to_datetime(val))
                         except: pass
-            
+
+            # Một trạm chỉ được tính 1 lần cho 1 tháng, dù file có 2 ô cùng ngày.
+            thang_da_tinh = set()
             for d in dates:
                 for idx, (tm, ty) in enumerate(target_months_years):
-                    if d.month == tm and d.year == ty:
+                    if d.month == tm and d.year == ty and idx not in thang_da_tinh:
+                        thang_da_tinh.add(idx)
                         monthly_sums[idx] += payment_val
-                    
+
         return monthly_sums
 
     viettel_totals = sum_provider_for_year("Viettel")
@@ -1979,15 +2027,8 @@ def get_profit_report_data_exclude_ca_nhan(file_source, time_input_str, df_sourc
         df = df[df[col0].astype(str).str.strip().str.lower() != 'cá nhân'].copy()
         
         ma_col = df.columns[0]
-        valid_cols = [c for c in df.columns if "ghi chú" not in str(c).lower() and "note" not in str(c).lower()]
-        filtered = []
-        for c in valid_cols:
-            if str(c).lower().startswith("unnamed"):
-                if not df[c].replace('', pd.NA).dropna().empty: filtered.append(c)
-            else:
-                filtered.append(c)
-        last_col = filtered[-1] if filtered else df.columns[-1]
-        
+        last_col = _pick_payment_col(df)
+
         m_col = None
         kw_list = ["trả/tháng", "thuê/tháng", "giá thuê", "đơn giá", "mức cước", "số tiền", "cước", "giá"]
         for kw in kw_list:
@@ -1998,8 +2039,10 @@ def get_profit_report_data_exclude_ca_nhan(file_source, time_input_str, df_sourc
             if m_col: break
         if not m_col: m_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
         
-        date_cols = [c for c in df.columns if c != ma_col and c != m_col and c != last_col]
-        
+        date_cols = [c for c in df.columns
+                     if c != ma_col and c != m_col and c != last_col
+                     and not _khong_phai_cot_ngay(c)]
+
         def parse_num(val):
             if pd.isna(val): return 0.0
             if isinstance(val, (int, float)): return float(val)
@@ -2007,11 +2050,11 @@ def get_profit_report_data_exclude_ca_nhan(file_source, time_input_str, df_sourc
             if s.endswith('.0'): s = s[:-2]
             digits = re.sub(r'\D', '', s)
             return float(digits) if digits else 0.0
-        
+
         for _, row in df.iterrows():
             payment_val = parse_num(row[last_col])
             if payment_val == 0: continue
-            
+
             dates = []
             for c in date_cols:
                 val = row[c]
@@ -2020,12 +2063,15 @@ def get_profit_report_data_exclude_ca_nhan(file_source, time_input_str, df_sourc
                     else:
                         try: dates.append(pd.to_datetime(val))
                         except: pass
-            
+
+            # Một trạm chỉ được tính 1 lần cho 1 tháng, dù file có 2 ô cùng ngày.
+            thang_da_tinh = set()
             for d in dates:
                 for idx, (tm, ty) in enumerate(target_months_years):
-                    if d.month == tm and d.year == ty:
+                    if d.month == tm and d.year == ty and idx not in thang_da_tinh:
+                        thang_da_tinh.add(idx)
                         monthly_sums[idx] += payment_val
-        
+
         return monthly_sums
     
     viettel_totals = sum_provider_exclude("Viettel")
