@@ -604,6 +604,208 @@ def render_revenue_unpaid_banner(f_source):
     """, unsafe_allow_html=True)
 
 
+# ============================================================
+# BẢNG CÔNG NỢ NHÀ MẠNG — nằm ngay dưới banner chạy chữ ở TAB 3
+# Trả lời 4 câu hỏi: tháng nào còn nợ, nhà mạng nào nợ, nợ trạm nào,
+# và tổng tiền các nhà mạng còn nợ công ty DKV là bao nhiêu.
+# ============================================================
+DEBT_LOOKBACK = {
+    "6 tháng gần nhất":  6,
+    "12 tháng gần nhất": 12,
+    "24 tháng gần nhất": 24,
+    "Toàn bộ (tối đa 60 tháng)": 60,
+}
+
+
+def _month_range_back(month_str, months_back: int):
+    """['MM/YYYY', ...] từ cũ → mới, kết thúc ĐÚNG ở tháng được chọn."""
+    try:
+        mm, yy = [int(x) for x in str(month_str).strip().split('/')]
+    except Exception:
+        now = _today()
+        mm, yy = now.month, now.year
+    out = []
+    m, y = mm, yy
+    for _ in range(max(1, int(months_back))):
+        out.append(f"{m:02d}/{y}")
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    return list(reversed(out))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _revenue_due_rows(file_source, month_str, months_back, version):
+    """
+    MỌI kỳ thanh toán của 3 nhà mạng rơi vào khoảng [tháng chọn - months_back + 1 .. tháng chọn].
+
+    Cố ý KHÔNG đụng tới trạng thái tick: hàm này chỉ phụ thuộc file Excel nên cache
+    dùng lại được qua mọi lần rerun. Mỗi lần kế toán tick 1 ô là Streamlit chạy lại
+    toàn bộ script — nếu gộp phần lọc tick vào đây thì tick nào cũng phải quét lại
+    hàng chục tháng dữ liệu. Việc lọc "đã thu / chưa thu" làm ở ngoài, rất nhẹ.
+    """
+    rows = []
+    for th in _month_range_back(month_str, months_back):
+        try:
+            dfs = load_revenue_data_v2(file_source, th)
+        except Exception:
+            continue
+        for df_p, prov in zip(dfs, PROVIDERS):
+            if df_p is None or df_p.empty:
+                continue
+            col_ky = f"Kỳ {prov} thanh toán"
+            col_nm = f"Mã {prov}"
+            for _, r in df_p.iterrows():
+                ma = str(r.get("Mã trạm", "")).strip()
+                if not ma or ma.lower() == "nan":
+                    continue
+                rows.append({
+                    "Tháng":         th,
+                    "Nhà mạng":      prov,
+                    "Mã trạm":       ma,
+                    "Mã nhà mạng":   str(r.get(col_nm, "-")).strip() if col_nm in df_p.columns else "-",
+                    "Kỳ thanh toán": str(r.get(col_ky, "")).strip(),
+                    "__tien__":      float(r.get("__raw_payment__", 0.0) or 0.0),
+                })
+    cols = ["Tháng", "Nhà mạng", "Mã trạm", "Mã nhà mạng", "Kỳ thanh toán", "__tien__"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def build_revenue_debt(file_source, month_str, months_back, all_status):
+    """
+    Tách các kỳ thanh toán thành ĐÃ THU / CÒN NỢ theo trạng thái tick đã LƯU.
+
+    Trả về (df_chi_tiet_con_no, df_tong_hop_theo_thang, tong_phai_thu, tong_da_thu).
+    df_chi_tiet có thêm cột '__qua_han__' (True nếu kỳ TT đã qua ngày hôm nay).
+    """
+    df_all = _revenue_due_rows(file_source, month_str, months_back, _source_version(file_source))
+    thangs = _month_range_back(month_str, months_back)
+
+    if df_all is None or df_all.empty:
+        return pd.DataFrame(), pd.DataFrame(), 0.0, 0.0
+
+    # Tập trạm đã thu, tra 1 lần cho mỗi (tháng, nhà mạng) thay vì tra từng dòng.
+    da_thu = {(th, p): _rev_paid_set(all_status, th, p) for th in thangs for p in PROVIDERS}
+    chua = [str(r["Mã trạm"]).strip() not in da_thu.get((r["Tháng"], r["Nhà mạng"]), set())
+            for _, r in df_all.iterrows()]
+
+    tong_phai_thu = float(df_all["__tien__"].sum())
+    df_no = df_all[pd.Series(chua, index=df_all.index)].copy()
+    tong_da_thu = tong_phai_thu - float(df_no["__tien__"].sum())
+
+    today = _today()
+    if not df_no.empty:
+        _ky = pd.to_datetime(df_no["Kỳ thanh toán"], format="%m/%d/%Y", errors="coerce")
+        df_no["__qua_han__"] = _ky.notna() & (_ky < today)
+        df_no["__sort__"] = pd.to_datetime(df_no["Tháng"], format="%m/%Y", errors="coerce")
+        df_no = df_no.sort_values(by=["__sort__", "Nhà mạng", "Kỳ thanh toán"]).drop(columns="__sort__")
+
+    # Tổng hợp theo tháng: giữ CẢ tháng đã thu đủ (nợ = 0) để thấy rõ tháng nào sạch nợ.
+    recs = []
+    for th in thangs:
+        sub_all = df_all[df_all["Tháng"] == th]
+        if sub_all.empty:
+            continue                      # tháng không có kỳ TT nào → bỏ hẳn, không phải "sạch nợ"
+        sub_no = df_no[df_no["Tháng"] == th] if not df_no.empty else df_no
+        rec = {"Tháng": th}
+        for p in PROVIDERS:
+            rec[f"{p} còn nợ"] = float(sub_no[sub_no["Nhà mạng"] == p]["__tien__"].sum()) if not sub_no.empty else 0.0
+        rec["Tổng nợ trong tháng"] = sum(rec[f"{p} còn nợ"] for p in PROVIDERS)
+        rec["Số trạm chưa thu"]    = int(len(sub_no))
+        rec["Tổng phải thu"]       = float(sub_all["__tien__"].sum())
+        recs.append(rec)
+
+    return df_no, pd.DataFrame(recs), tong_phai_thu, tong_da_thu
+
+
+def render_revenue_debt_tables(file_source, month_str, months_back, all_status):
+    """
+    Bảng công nợ nhà mạng, hiển thị ngay dưới banner chạy chữ của TAB 3.
+    Trả về (df tổng hợp, df chi tiết) để ghép thêm 2 sheet vào file Excel tải về.
+    """
+    if file_source is None:
+        return None, None
+
+    df_no, df_sum, tong_phai_thu, tong_da_thu = build_revenue_debt(
+        file_source, month_str, months_back, all_status)
+
+    tong_no = tong_phai_thu - tong_da_thu
+    thangs  = _month_range_back(month_str, months_back)
+    pham_vi = f"{thangs[0]} → hết {thangs[-1]}"
+
+    st.markdown(f'<h3 style="color:#b71c1c;font-weight:900;margin-bottom:2px;">'
+                f'🧾 BẢNG CÔNG NỢ NHÀ MẠNG — LUỸ KẾ ĐẾN HẾT THÁNG {month_str}</h3>',
+                unsafe_allow_html=True)
+    st.caption(f"Phạm vi quét: **{pham_vi}** · Số liệu căn cứ trạng thái tick ĐÃ LƯU "
+               f"(tick xong phải bấm **LƯU TRẠNG THÁI** thì bảng này mới trừ nợ).")
+
+    if df_sum is None or df_sum.empty:
+        st.info("Không có kỳ thanh toán nào của nhà mạng trong phạm vi này.")
+        return None, None
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("📄 Tổng phải thu", f"{tong_phai_thu:,.0f} đ")
+    c2.metric("✅ Đã thu",        f"{tong_da_thu:,.0f} đ")
+    c3.metric("🔴 CÒN NỢ DKV",   f"{tong_no:,.0f} đ",
+              delta=f"{len(df_no)} trạm chưa thu", delta_color="inverse")
+
+    if tong_no <= 0:
+        st.success(f"🎉 Các nhà mạng đã thanh toán ĐỦ toàn bộ kỳ trong phạm vi {pham_vi}.")
+        return None, None
+
+    # ---------- Bảng A: tổng hợp theo tháng ----------
+    st.markdown('<h4 style="color:#b71c1c;font-weight:800;">📊 A. Tổng tiền nhà mạng còn nợ theo từng tháng</h4>',
+                unsafe_allow_html=True)
+    _tien_cols = [f"{p} còn nợ" for p in PROVIDERS] + ["Tổng nợ trong tháng", "Tổng phải thu"]
+    _cot = (["Tháng"] + [f"{p} còn nợ" for p in PROVIDERS]
+            + ["Tổng nợ trong tháng", "Số trạm chưa thu", "Tổng phải thu"])
+    _total = {"Tháng": "🔴 TỔNG CỘNG"}
+    for c in _tien_cols:
+        _total[c] = float(df_sum[c].sum())
+    _total["Số trạm chưa thu"] = int(df_sum["Số trạm chưa thu"].sum())
+    # Bản SỐ THẬT để ghi ra Excel (kế toán còn SUM/lọc được), bản CHUỖI để hiển thị.
+    df_sum_xl = pd.concat([df_sum, pd.DataFrame([_total])], ignore_index=True)[_cot]
+    df_sum_d  = df_sum_xl.copy()
+    for c in _tien_cols:
+        df_sum_d[c] = df_sum_d[c].map(lambda v: f"{v:,.0f}")
+
+    _html = df_sum_d.to_html(index=False, classes="red-header-table debt-sum", escape=True)
+    _html = re.sub(r"<tr>(\s*<td>🔴 TỔNG CỘNG</td>)", r'<tr class="debt-total-row">\1', _html)
+    st.markdown(_html, unsafe_allow_html=True)
+
+    # ---------- Bảng B: chi tiết từng trạm ----------
+    today = _today()
+    df_ct = pd.DataFrame({
+        "Tháng":           df_no["Tháng"],
+        "Nhà mạng":        df_no["Nhà mạng"],
+        "Mã trạm":         df_no["Mã trạm"],
+        "Mã nhà mạng":     df_no["Mã nhà mạng"],
+        "Kỳ thanh toán":   df_no["Kỳ thanh toán"],
+        "Số tiền còn nợ":  df_no["__tien__"].map(lambda v: f"{v:,.0f}"),
+    })
+    _ky = pd.to_datetime(df_no["Kỳ thanh toán"], format="%m/%d/%Y", errors="coerce")
+    df_ct["Tình trạng"] = [
+        (f"🔴 Quá hạn {(today - d).days} ngày" if pd.notna(d) and d < today
+         else ("🟡 Chưa đến hạn" if pd.notna(d) else "—"))
+        for d in _ky]
+    df_ct["Ghi chú"] = "Nếu nhà mạng đã thanh toán, anh cần tick ✅ Đã TT ở bảng bên dưới"
+    df_ct.insert(0, "STT", range(1, len(df_ct) + 1))
+
+    # Danh sách chi tiết có thể lên tới vài trăm dòng — để trong expander cho khỏi
+    # đẩy phần báo cáo doanh thu xuống quá sâu, bấm 1 cái là xem đủ.
+    with st.expander(f"🔍 B. Chi tiết {len(df_ct)} trạm nhà mạng CHƯA thanh toán "
+                     f"(bấm để mở — nợ trạm nào, kỳ nào, bao nhiêu tiền)", expanded=False):
+        st.markdown(df_ct.to_html(index=False, classes="red-header-table debt-detail", escape=True),
+                    unsafe_allow_html=True)
+        st.caption("🔴 Quá hạn = kỳ thanh toán đã qua mà chưa tick thu tiền · "
+                   "🟡 Chưa đến hạn = kỳ nằm trong tháng đang chọn nhưng chưa tới ngày.")
+
+    # Bản Excel: cột tiền là SỐ THẬT, không phải chuỗi đã format.
+    df_ct_xl = df_ct.copy()
+    df_ct_xl["Số tiền còn nợ"] = df_no["__tien__"].values
+    return df_sum_xl, df_ct_xl
+
+
 def get_expiry_alert(df_source):
     """
     Tính các trạm sắp hết hạn HĐ chủ nhà (trong vòng 6 tháng).
@@ -2128,6 +2330,43 @@ def _read_source_sheets(file_source, version):
     return df1, df2, n1
 
 
+# Cột toạ độ trên Sheet 1 — giữ nguyên số thực, KHÔNG để pandas làm tròn.
+TOA_DO_COLS = ("long thuê", "lat thuê")
+
+
+def _toa_do_chinh_xac(v):
+    """
+    Trả về chuỗi toạ độ ĐÚNG Y NHƯ trong Excel.
+
+    LÝ DO BẮT BUỘC: pandas hiển thị float theo display.precision = 6, nên
+    to_html() cắt 106.7519503 thành '106.751950' và 106.5627275 thành
+    '106.562727'. Sai số ~0.00000005 độ thì nhỏ, nhưng toạ độ hiện trên Tab 1
+    là để copy sang Google Maps / bàn giao đội thi công — số đã bị cắt bớt là
+    số sai, chưa kể còn bị đệm thêm chữ số 0 giả ở cuối.
+
+    repr(float) cho chuỗi NGẮN NHẤT mà vẫn round-trip đúng giá trị gốc, nên
+    106.7519503 ra '106.7519503', còn 10.766488 vẫn là '10.766488'.
+    Lưu ý phải ép về float thuần: repr(np.float64(x)) ra 'np.float64(106.75...)'.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v)
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (int,)):
+        return str(v)
+    if isinstance(v, float) or hasattr(v, "dtype"):
+        try:
+            return repr(float(v))
+        except (TypeError, ValueError):
+            pass
+    return str(v).strip()
+
+
 def load_data_and_enrich_v3(file_source, target_month_str):
     """Vỏ bọc: tự gắn dấu vân tay file vào khoá cache rồi gọi hàm tính bên trong."""
     return _load_data_and_enrich_cached(file_source, target_month_str,
@@ -2175,6 +2414,14 @@ def _load_data_and_enrich_cached(file_source, target_month_str, version):
         for col in df_filtered.columns:
             if pd.api.types.is_datetime64_any_dtype(df_filtered[col]):
                 df_filtered[col] = df_filtered[col].dt.strftime('%m/%d/%Y')
+
+        # Chốt long/lat thành chuỗi số thực trước khi hiển thị (xem _toa_do_chinh_xac).
+        # Phải làm ở đây — ngay tại nguồn — để Tab 1, thẻ điện thoại và Tab 9 đều
+        # lấy đúng một giá trị, không nơi nào tự làm tròn lại.
+        for _c in TOA_DO_COLS:
+            if _c in df_filtered.columns:
+                df_filtered[_c] = df_filtered[_c].map(_toa_do_chinh_xac)
+
         df_filtered = df_filtered.fillna("")
         
         # 2. SHEET 2: LỊCH SỬ THANH TOÁN (đã đọc sẵn ở trên)
@@ -2310,6 +2557,13 @@ def render_cards(df_to_render, is_payment_tab=False, columns_to_show=None):
                 # High-light các cột thanh toán
                 elif col in EXTRA_PAY_COLS:
                     st.markdown(f"<span style='color:#a8d1ff;'>**{col}:** &nbsp;&nbsp; {val}</span>", unsafe_allow_html=True)
+                # Toạ độ: KHÔNG được đi qua nhánh định dạng tiền bên dưới.
+                # f"{106.799272:,.0f}" ra "107" — thẻ trên điện thoại từng hiện
+                # long/lat thành số nguyên đúng vì lý do này. Chặn ngay từ đây để
+                # dù dữ liệu vào là float hay chuỗi cũng luôn ra số thực đầy đủ.
+                elif col in TOA_DO_COLS:
+                    _td = _toa_do_chinh_xac(val)
+                    st.markdown(f"**{col}:** &nbsp;&nbsp; {_td if _td else '-'}")
                 else:
                     if pd.isna(val) or str(val).strip() == "": val = "-"
                     # Định dạng số tiền nếu là kiểu số
@@ -2348,7 +2602,14 @@ if not df_source.empty:
                 if target_stations:
                     mask = df_display["mã trạm"].astype(str).str.strip().str.lower().isin(target_stations)
                     df_display = df_display[mask]
-                    
+            st.session_state['t1_df'] = df_display
+
+        # Hiển thị nằm NGOÀI if submit_search: bấm nút Tải Excel là Streamlit chạy
+        # lại script, submit_search trở về False — để nguyên trong đó thì vừa bấm
+        # tải xong là toàn bộ kết quả tra cứu biến mất.
+        if 't1_df' in st.session_state:
+            df_display = st.session_state['t1_df']
+
             if df_display.empty:
                 st.warning("❌ Rất tiếc! Không tìm thấy mã trạm nào khớp với dữ liệu bạn cung cấp.")
             else:
@@ -2382,7 +2643,27 @@ if not df_source.empty:
                         return m.group(0)
                     return _re.sub(r'<td>(https?://[^<]+)</td>', _replace_cell, html_str)
                 st.markdown(_linkify_drive(html_report_1), unsafe_allow_html=True)
-                
+
+                # --- Tải kết quả tra cứu ra Excel ---
+                _xl1 = df_clean_tab1.copy()
+                # long/lat ghi ra dạng SỐ để trong Excel còn sắp xếp / tính khoảng cách
+                # được; Excel hiển thị đủ 7 chữ số thập phân nên không mất độ chính xác.
+                for _c in TOA_DO_COLS:
+                    if _c in _xl1.columns:
+                        _xl1[_c] = pd.to_numeric(_xl1[_c], errors='coerce')
+                _out1 = io.BytesIO()
+                with pd.ExcelWriter(_out1, engine='openpyxl') as writer:
+                    _xl1.to_excel(writer, index=False, sheet_name='TraCuuTram')
+                st.download_button(
+                    label=f"🔽 TẢI XUỐNG KẾT QUẢ TRA CỨU {len(_xl1)} TRẠM (EXCEL)",
+                    data=_out1.getvalue(),
+                    file_name=f"Tra_Cuu_Tram_{_today():%d%m%Y}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                    key="dl_tab1",
+                )
+
                 st.markdown("---")
                 st.markdown("### 🏷️ Chi Tiết Dạng Thẻ (Dành cho Vuốt Trên Điện Thoại)")
                 render_cards(df_display, is_payment_tab=False)
@@ -2622,11 +2903,22 @@ if not df_source.empty:
         # --- BANNER: nhà mạng còn trạm chưa thanh toán ở các tháng ĐÃ KẾT THÚC ---
         render_revenue_unpaid_banner(DEFAULT_FILE if DEFAULT_FILE else uploaded_file)
 
+        # Chỗ dành sẵn cho BẢNG CÔNG NỢ — đặt ngay dưới banner theo đúng vị trí mong
+        # muốn, nhưng chỉ điền được sau khi biết tháng đang chọn (ở form phía dưới).
+        _debt_box = st.container()
+
         with st.form(key='revenue_form'):
-            st.info("Hệ thống tự động tra cứu Dữ liệu Doanh thu từ 3 Sheet (Trạm Viettel thanh toán, Trạm Vina thanh toán, Trạm Mobi thanh toán). Cột SỐ TIỀN THANH TOÁN (1 kỳ) sẽ móc mặc định từ Cột Cuối Cùng của mỗi bảng trên file Excel!")
-            month_input_tab3 = st.text_input("📅 Nhập định dạng Tháng/Năm Doanh Thu (MM/YYYY):", value=current_mm_yyyy)
+            st.info("Hệ thống tự động tra cứu Dữ liệu Doanh thu từ 3 Sheet (Trạm Viettel thanh toán, Trạm Vina thanh toán, Trạm Mobi thanh toán). Cột SỐ TIỀN THANH TOÁN (1 kỳ) móc từ CỘT CUỐI CÙNG CÓ CHỨA TIỀN của mỗi bảng — các cột ghi chú/khoảng thời gian nằm sau nó sẽ được bỏ qua!")
+            _c_th, _c_lb = st.columns([2, 1])
+            with _c_th:
+                month_input_tab3 = st.text_input("📅 Nhập định dạng Tháng/Năm Doanh Thu (MM/YYYY):", value=current_mm_yyyy)
+            with _c_lb:
+                lookback_tab3 = st.selectbox(
+                    "🧾 Bảng công nợ truy ngược:", list(DEBT_LOOKBACK.keys()), index=1,
+                    help="Bảng công nợ luôn kết thúc ở tháng anh chọn bên trái; "
+                         "ô này quyết định truy ngược về trước bao nhiêu tháng.")
             submit_revenue = st.form_submit_button(label="🔍 LÊN BÁO CÁO DOANH THU", use_container_width=True)
-            
+
         # Lưu kết quả vào session_state để không bị mất khi tick checkbox (mỗi lần
         # tick là Streamlit chạy lại toàn bộ script).
         if submit_revenue:
@@ -2640,6 +2932,7 @@ if not df_source.empty:
                     _dv, _dvi, _dm = load_revenue_data_v2(f_source, month_input_tab3)
                     st.session_state['t3_dfs']   = (_dv, _dvi, _dm)
                     st.session_state['t3_month'] = month_input_tab3
+                    st.session_state['t3_lookback'] = lookback_tab3
                     # Tra cứu lại thì đọc lại trạng thái tick từ Gist
                     st.session_state.pop(f"rev_paid_{_month_key(month_input_tab3)}", None)
                     st.snow()
@@ -2674,10 +2967,36 @@ if not df_source.empty:
                 font-weight: 900 !important;
                 border-bottom: 3px solid #2e7d32 !important;
             }
+
+            /* --- Bảng công nợ --- */
+            /* Bảng A (tổng hợp): trừ cột Tháng, còn lại là tiền → canh phải cho dễ dóng cột. */
+            .debt-sum td { white-space: nowrap; }
+            .debt-sum td:not(:first-child) { text-align: right; }
+            /* Dòng TỔNG CỘNG: gắn class thẳng vào <tr> (không dùng :has() cho chắc trình duyệt) */
+            .debt-sum tr.debt-total-row td {
+                background-color: #ffe0e0 !important;
+                color: #b71c1c !important;
+                font-weight: 900 !important;
+                font-size: 15px !important;
+                border-top: 3px solid #b71c1c !important;
+            }
+            /* Bảng B (chi tiết): chỉ cột tiền canh phải, cột Ghi chú cho xuống dòng. */
+            .debt-detail td:nth-child(7) { text-align: right; white-space: nowrap; font-weight: 700; }
+            .debt-detail td:last-child { color: #00695c; font-style: italic; font-size: 13px; }
             </style>
             """, unsafe_allow_html=True)
 
             _all_st3 = load_payment_status()
+
+            # ---- BẢNG CÔNG NỢ: điền vào chỗ đã dành sẵn ngay dưới banner ----
+            # Đặt ở đây (không đặt lúc tạo container) vì phải chờ khối CSS phía trên
+            # được nhúng và phải có trạng thái tick đã lưu thì mới trừ nợ đúng.
+            _lb3 = DEBT_LOOKBACK.get(st.session_state.get('t3_lookback', ''), 12)
+            with _debt_box:
+                _df_no_sum, _df_no_ct = render_revenue_debt_tables(
+                    DEFAULT_FILE if DEFAULT_FILE else uploaded_file, _m3, _lb3, _all_st3)
+                st.markdown("---")
+
             _ctr3_key = f"rev_ctr_{_mk3}"
             if _ctr3_key not in st.session_state:
                 st.session_state[_ctr3_key] = 0
@@ -2817,6 +3136,11 @@ if not df_source.empty:
                             "✅ Đã thu" if str(v).strip() in _ticked.get(_nm, set()) else "⏳ Chưa thu"
                             for v in _dfp["Mã trạm"].astype(str)])
                         _x.to_excel(writer, index=False, sheet_name=_nm)
+                # 2 sheet công nợ — để kế toán đối chiếu offline với nhà mạng
+                if _df_no_sum is not None and not _df_no_sum.empty:
+                    _df_no_sum.to_excel(writer, index=False, sheet_name='Cong_No_Tong_Hop')
+                if _df_no_ct is not None and not _df_no_ct.empty:
+                    _df_no_ct.to_excel(writer, index=False, sheet_name='Cong_No_Chi_Tiet')
 
             st.download_button(
                 label="🔽 TẢI XUỐNG FILE TỔNG HỢP DOANH THU (EXCEL)",
@@ -3904,6 +4228,11 @@ if not df_source.empty:
                     ]
                     existing_show = [c for c in cols_show if c in df_map_filtered.columns]
                     df_map_show = df_map_filtered[existing_show].copy()
+                    # Ở trên đã pd.to_numeric() 2 cột toạ độ để vẽ bản đồ — đưa lại về
+                    # chuỗi số thực, nếu không bảng này lại bị làm tròn còn 6 số lẻ.
+                    for _c in (lat_col, long_col):
+                        if _c in df_map_show.columns:
+                            df_map_show[_c] = df_map_show[_c].map(_toa_do_chinh_xac)
                     df_map_show.insert(1, "Số NM", df_map_filtered["__provider_count__"].values)
                     df_map_show.insert(2, "Nhà Mạng", df_map_filtered["__providers__"].apply(
                         lambda x: " | ".join(x) if x else "Không có"
