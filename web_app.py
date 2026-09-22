@@ -3123,9 +3123,10 @@ if not df_source.empty:
             # Còn nợ = phải thu trong tháng − đã thu (theo các trạm đang tick).
             # Lấy ngay từ số liệu của chính bảng này nên luôn khớp 2 khối cột bên trái,
             # không phụ thuộc bảng công nợ truy ngược bên trên.
-            COL_NO = {"Viettel": "Viettel còn nợ",
-                      "Vina":    "Vina còn nợ",
-                      "Mobi":    "Mobi còn nợ"}
+            # Ghi rõ "lũy kế" để khỏi nhầm là nợ phát sinh riêng trong tháng
+            COL_NO = {"Viettel": "Viettel còn nợ lũy kế",
+                      "Vina":    "Vina còn nợ lũy kế",
+                      "Mobi":    "Mobi còn nợ lũy kế"}
             _nv, _nvi, _nmo = _sv - _pv, _svi - _pvi, _smo - _pmo
 
             with _summary_box:

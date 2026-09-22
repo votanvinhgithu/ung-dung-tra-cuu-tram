@@ -1,0 +1,20 @@
+# ============================================================
+# GIAO DIỆN APP — Streamlit đọc file này khi khởi động
+# ============================================================
+# Bảng 2/3/4 ở Tab 3 và bảng theo dõi ở Tab 5 là widget st.dataframe /
+# st.data_editor. Streamlit VẼ chúng lên canvas chứ không phải HTML, nên
+# CSS không đổi màu được — phải chỉnh qua theme ở đây.
+# ============================================================
+
+[theme]
+base = "light"
+
+# Màu nhấn: quyết định màu ô TICK trong bảng (nền xanh, dấu ✓ trắng).
+# Cũng áp cho các nút type="primary" (LƯU, TẢI XUỐNG).
+primaryColor = "#16A34A"
+
+# Nền hàng HEADER của mọi bảng dữ liệu — màu hồng cho khớp các bảng HTML khác.
+dataframeHeaderBackgroundColor = "#FFEAEA"
+
+# Viền bảng cho hài hoà với các bảng HTML tự vẽ
+dataframeBorderColor = "#E0E0E0"

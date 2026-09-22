@@ -1,0 +1,58 @@
+# ============================================================
+# TUYỆT ĐỐI KHÔNG ĐƯA MẬT KHẨU / TOKEN LÊN GITHUB
+# ============================================================
+.streamlit/secrets.toml
+secrets.toml
+secrets_MAU.toml
+
+# File trạng thái thanh toán chạy local (trên cloud dùng GitHub Gist)
+payment_status.json
+
+# ============================================================
+# RÁC / FILE KHÔNG CẦN ĐƯA LÊN
+# ============================================================
+__pycache__/
+*.pyc
+~$*.xlsx
+*.exe
+*.rar
+*.spec
+*.docx
+*.log
+build/
+dist/
+
+# Bản lưu theo ngày giờ (web_app_22092026_1324.py, data_22092026_1324.xlsx …)
+web_app_*.py
+data_*.xlsx
+requirements_*.txt
+
+# Các bản cũ / bản nháp trong thư mục
+web_app - *.py
+*_OK*.py
+offline_*.py
+native_gui_app.py
+desktop_app.py
+build_*.py
+station_finder.py
+new_script.py
+generator.py
+byte_fix.py
+fix_tabs.py
+*.ps1
+*.txt.py
+tmp*.txt
+newtabs.py.txt
+tabs89.py.txt
+
+# Công cụ tính tay, không phải file app
+TinhTien_*.xlsx
+
+# Thư mục dữ liệu mẫu
+_Dau vao chuan_Tra cuu HD/
+_DEPLOY_STREAMLIT/
+
+# ============================================================
+# CHỈ 4 FILE SAU ĐƯỢC ĐƯA LÊN GITHUB:
+#   web_app.py · data.xlsx · requirements.txt · .gitignore
+# ============================================================
