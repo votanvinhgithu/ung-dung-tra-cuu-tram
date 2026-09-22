@@ -609,11 +609,11 @@ def render_revenue_unpaid_banner(f_source):
 # Trả lời 4 câu hỏi: tháng nào còn nợ, nhà mạng nào nợ, nợ trạm nào,
 # và tổng tiền các nhà mạng còn nợ công ty DKV là bao nhiêu.
 # ============================================================
+# Chỉ 3 và 6 tháng: thực tế không có chuyện nhà mạng nợ quá 6 tháng,
+# để lựa chọn dài hơn chỉ làm bảng nặng và rối.
 DEBT_LOOKBACK = {
-    "6 tháng gần nhất":  6,
-    "12 tháng gần nhất": 12,
-    "24 tháng gần nhất": 24,
-    "Toàn bộ (tối đa 60 tháng)": 60,
+    "3 tháng gần nhất": 3,
+    "6 tháng gần nhất": 6,
 }
 
 
@@ -710,9 +710,9 @@ def build_revenue_debt(file_source, month_str, months_back, all_status):
         rec = {"Tháng": th}
         for p in PROVIDERS:
             rec[f"{p} còn nợ"] = float(sub_no[sub_no["Nhà mạng"] == p]["__tien__"].sum()) if not sub_no.empty else 0.0
-        rec["Tổng nợ trong tháng"] = sum(rec[f"{p} còn nợ"] for p in PROVIDERS)
-        rec["Số trạm chưa thu"]    = int(len(sub_no))
-        rec["Tổng phải thu"]       = float(sub_all["__tien__"].sum())
+        rec["Tổng tiền nhà mạng còn nợ trong tháng"] = sum(rec[f"{p} còn nợ"] for p in PROVIDERS)
+        rec["Số trạm chưa thu"]        = int(len(sub_no))
+        rec["Tổng doanh thu theo tháng"] = float(sub_all["__tien__"].sum())
         recs.append(rec)
 
     return df_no, pd.DataFrame(recs), tong_phai_thu, tong_da_thu
@@ -756,9 +756,11 @@ def render_revenue_debt_tables(file_source, month_str, months_back, all_status):
     # ---------- Bảng A: tổng hợp theo tháng ----------
     st.markdown('<h4 style="color:#b71c1c;font-weight:800;">📊 A. Tổng tiền nhà mạng còn nợ theo từng tháng</h4>',
                 unsafe_allow_html=True)
-    _tien_cols = [f"{p} còn nợ" for p in PROVIDERS] + ["Tổng nợ trong tháng", "Tổng phải thu"]
+    _tien_cols = ([f"{p} còn nợ" for p in PROVIDERS]
+                  + ["Tổng tiền nhà mạng còn nợ trong tháng", "Tổng doanh thu theo tháng"])
     _cot = (["Tháng"] + [f"{p} còn nợ" for p in PROVIDERS]
-            + ["Tổng nợ trong tháng", "Số trạm chưa thu", "Tổng phải thu"])
+            + ["Tổng tiền nhà mạng còn nợ trong tháng", "Số trạm chưa thu",
+               "Tổng doanh thu theo tháng"])
     _total = {"Tháng": "🔴 TỔNG CỘNG"}
     for c in _tien_cols:
         _total[c] = float(df_sum[c].sum())
@@ -2977,6 +2979,16 @@ if not df_source.empty:
                 border-bottom: 3px solid #2e7d32 !important;
             }
 
+            /* Header các cột CÒN NỢ — nền đỏ đậm chữ trắng, tách hẳn khỏi
+               khối doanh thu (chữ đỏ nền hồng) và khối lũy kế (chữ xanh lá). */
+            .red-header-table th.no-do,
+            table.red-header-table thead tr th.no-do {
+                color: #ffffff !important;
+                background-color: #c62828 !important;
+                font-weight: 900 !important;
+                border-bottom: 3px solid #8e0000 !important;
+            }
+
             /* --- Bảng công nợ --- */
             /* Bảng A (tổng hợp): trừ cột Tháng, còn lại là tiền → canh phải cho dễ dóng cột. */
             .debt-sum td { white-space: nowrap; }
@@ -3108,6 +3120,14 @@ if not df_source.empty:
                       "Vina":    "Vina đã trả lũy kế",
                       "Mobi":    "Mobi đã trả lũy kế",
                       "Tong":    "Sum số tiền lũy kế nhà mạng đã trả"}
+            # Còn nợ = phải thu trong tháng − đã thu (theo các trạm đang tick).
+            # Lấy ngay từ số liệu của chính bảng này nên luôn khớp 2 khối cột bên trái,
+            # không phụ thuộc bảng công nợ truy ngược bên trên.
+            COL_NO = {"Viettel": "Viettel còn nợ",
+                      "Vina":    "Vina còn nợ",
+                      "Mobi":    "Mobi còn nợ"}
+            _nv, _nvi, _nmo = _sv - _pv, _svi - _pvi, _smo - _pmo
+
             with _summary_box:
                 st.markdown('<h3 style="color:red; font-weight:bold;">🌐 Bảng 1: Bảng Đầu Tiên - Tổng Kết Doanh Thu Trong Tháng</h3>',
                             unsafe_allow_html=True)
@@ -3121,18 +3141,23 @@ if not df_source.empty:
                     COL_LK["Vina"]:    [f"{_pvi:,.0f}"],
                     COL_LK["Mobi"]:    [f"{_pmo:,.0f}"],
                     COL_LK["Tong"]:    [f"{_pv+_pvi+_pmo:,.0f}"],
+                    COL_NO["Viettel"]: [f"{_nv:,.0f}"],
+                    COL_NO["Vina"]:    [f"{_nvi:,.0f}"],
+                    COL_NO["Mobi"]:    [f"{_nmo:,.0f}"],
                 })
                 df_summ.insert(0, 'STT', range(1, len(df_summ) + 1))
                 _html3 = df_summ.to_html(index=False, classes="red-header-table", escape=False)
-                # Gắn class "lk-xanh" cho header các cột lũy kế (màu định nghĩa ở khối CSS trên).
+                # Gắn class cho header: lũy kế = xanh lá, còn nợ = nền đỏ đậm chữ trắng.
                 # Dùng class thay cho style="" vì Streamlit lọc mất style trên thẻ <th>.
-                for _c in COL_LK.values():
+                for _c, _cls in ([(c, "lk-xanh") for c in COL_LK.values()]
+                                 + [(c, "no-do") for c in COL_NO.values()]):
                     _html3 = re.sub(
                         r"<th[^>]*>\s*" + re.escape(_c) + r"\s*</th>",
-                        f'<th class="lk-xanh">{_c}</th>',
+                        f'<th class="{_cls}">{_c}</th>',
                         _html3)
                 st.markdown(_html3, unsafe_allow_html=True)
-                st.caption("🟢 Cột chữ xanh lá = tiền nhà mạng **đã thực trả**, cộng dồn theo các trạm được tick ở bảng dưới.")
+                st.caption("🟢 Cột chữ xanh lá = tiền nhà mạng **đã thực trả** (theo các trạm được tick ở bảng dưới) · "
+                           "🔴 Cột nền đỏ = **còn nợ** = phải thu − đã thu.")
 
             st.markdown("---")
             out_rev = io.BytesIO()
