@@ -2505,6 +2505,37 @@ def load_payback_data(file_source):
 # --- SIDEBAR VÀ NHÚNG DATA ---
 st.sidebar.header("📁 Dữ Liệu Báo Cáo")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Ô TỰ CHẨN ĐOÁN — để biết bản trên web có đọc được .streamlit/config.toml chưa.
+# Màu ô tick và màu nền header bảng do file config.toml quyết định, không phải
+# do code; nếu file lên sai đường dẫn thì app vẫn chạy nhưng màu không đổi.
+# ─────────────────────────────────────────────────────────────────────────────
+with st.sidebar.expander("ℹ️ Thông tin hệ thống"):
+    try:
+        _v_st = st.__version__
+    except Exception:
+        _v_st = "?"
+    def _opt(ten):
+        try:
+            return st.get_option(ten)
+        except Exception:
+            return None
+    _pc = _opt("theme.primaryColor")
+    _hb = _opt("theme.dataframeHeaderBackgroundColor")
+    _ok_theme = bool(_pc) and str(_pc).upper() == "#16A34A"
+
+    st.caption(f"**Streamlit:** {_v_st}"
+               + ("" if _v_st >= "1.55" else "  ⚠️ cần ≥ 1.55 để đổi màu header bảng"))
+    st.caption(f"**Màu ô tick (primaryColor):** `{_pc or 'chưa đặt'}`")
+    st.caption(f"**Nền header bảng:** `{_hb or 'chưa đặt'}`")
+    if _ok_theme:
+        st.success("✅ Đã đọc được `.streamlit/config.toml`")
+    else:
+        st.error("❌ CHƯA đọc được `.streamlit/config.toml` — "
+                 "kiểm tra file có đúng đường dẫn `.streamlit/config.toml` "
+                 "trên GitHub không (không phải để ở thư mục gốc).")
+    st.caption(f"**Hôm nay (giờ VN):** {_today():%d/%m/%Y}")
+
 current_mm_yyyy = _today().strftime('%m/%Y')
 
 # Hỗ trợ tự động nhận diện cả chữ hoa chữ thường
