@@ -1596,6 +1596,7 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
             "__new_amount__": new_amount_val,           # giá thuê mới (0.0 nếu không có)
             "__new_price_dt__": new_price_dt_inner,     # datetime hoặc None
             "__due_dt__": due_date,                     # pd.Timestamp gốc để tính period_end
+            "__next_dt__": next_date,                   # kỳ SẮP TỚI (dùng cho Tab 1)
             "__is_due_this_month__": bool(due_date)
         }
         
@@ -1672,9 +1673,17 @@ def enrich_payment_data(df_main, df_pay, target_month, target_year):
         new_price_dt = info.get("__new_price_dt__", None)   # datetime | None
         due_dt_pay   = info.get("__due_dt__", None)          # pd.Timestamp | None
 
-        if due_dt_pay is not None and new_monthly > 0 and new_price_dt is not None and base_monthly > 0:
+        # NEO KỲ để tính tiền:
+        #   - Tháng đang tra cứu CÓ đến hạn  → lấy chính kỳ đó (Tab 2, Tab 5).
+        #   - Tháng đang tra cứu KHÔNG đến hạn → lấy KỲ SẮP TỚI (Tab 1).
+        # Trước đây chỗ này chỉ nhận due_dt_pay: Tab 1 nạp theo tháng hiện tại nên
+        # mọi trạm chưa tới kỳ đều rơi vào nhánh "không có giá mới" và bị tính theo
+        # GIÁ CŨ, lệch hẳn với số tiền Tab 2/Tab 5 hiển thị đúng vào tháng đến hạn.
+        _neo_ky = due_dt_pay if due_dt_pay is not None else info.get("__next_dt__", None)
+
+        if _neo_ky is not None and new_monthly > 0 and new_price_dt is not None and base_monthly > 0:
             # Chuyển pd.Timestamp → datetime thuần để _add_months không bị lỗi
-            due_dt_py  = due_dt_pay.to_pydatetime() if hasattr(due_dt_pay, 'to_pydatetime') else due_dt_pay
+            due_dt_py  = _neo_ky.to_pydatetime() if hasattr(_neo_ky, 'to_pydatetime') else _neo_ky
             cycle_int  = max(1, round(real_cycle))           # làm tròn số tháng
             period_end = _add_months(due_dt_py, cycle_int) + timedelta(days=-1)
 
